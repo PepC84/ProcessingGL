@@ -30,42 +30,100 @@
 // ── Stubs for Linux headers that may still be included by user code ─────────
 // These are empty on Windows since Platform.h provides the real implementations.
 // This allows code written for Linux to compile without changes.
-#ifndef _TERMIOS_STUB
-#  define _TERMIOS_STUB
+// ── Fake termios.h so old code that does #include <termios.h> still compiles ─
+// We set the same header guard that a real termios.h would set, so the
+// #include becomes a no-op after Platform.h has already defined everything.
+#ifndef _TERMIOS_H
+#define _TERMIOS_H
    typedef unsigned int speed_t;
    typedef unsigned int tcflag_t;
    typedef unsigned char cc_t;
-   static const int B9600=9600, B115200=115200, B57600=57600, B38400=38400;
-   static const int B19200=19200, B4800=4800, B2400=2400, B1200=1200, B300=300;
-   static const int TCSANOW=0, IGNBRK=0, CS8=0, CLOCAL=0, CREAD=0;
-   static const int PARENB=0, PARODD=0, CSTOPB=0, CRTSCTS=0, CSIZE=0;
-   static const int IXON=0, IXOFF=0, IXANY=0;
+   static const speed_t B300=300, B600=600, B1200=1200, B2400=2400, B4800=4800;
+   static const speed_t B9600=9600, B14400=14400, B19200=19200, B38400=38400;
+   static const speed_t B57600=57600, B115200=115200, B230400=230400;
+   static const int TCSANOW=0, TCSADRAIN=1, TCSAFLUSH=2;
+   static const tcflag_t IGNBRK=1, IXON=2, IXOFF=4, IXANY=8;
+   static const tcflag_t CLOCAL=0x800, CREAD=0x200, CS8=0x30, CSIZE=0x30;
+   static const tcflag_t PARENB=0x100, PARODD=0x200, CSTOPB=0x40, CRTSCTS=0x80000000;
    static const int VMIN=6, VTIME=5;
    struct termios {
-       tcflag_t c_iflag, c_oflag, c_cflag, c_lflag;
-       cc_t c_cc[20];
+       tcflag_t c_iflag=0, c_oflag=0, c_cflag=0, c_lflag=0;
+       cc_t c_cc[20]={};
    };
-   inline int tcgetattr(int,struct termios*){return 0;}
-   inline int tcsetattr(int,int,const struct termios*){return 0;}
-   inline int cfsetispeed(struct termios*,speed_t){return 0;}
-   inline int cfsetospeed(struct termios*,speed_t){return 0;}
-#endif
-#ifndef _GLOB_STUB
-#  define _GLOB_STUB
-   struct glob_t { size_t gl_pathc=0; char** gl_pathv=nullptr; };
-   inline int  glob(const char*,int,void*,glob_t* g){g->gl_pathc=0;return 1;}
+   inline int tcgetattr(int,termios*){return 0;}
+   inline int tcsetattr(int,int,const termios*){return 0;}
+   inline int cfsetispeed(termios*,speed_t){return 0;}
+   inline int cfsetospeed(termios*,speed_t){return 0;}
+#endif  // _TERMIOS_H
+
+// ── Fake glob.h ────────────────────────────────────────────────────────────
+#ifndef _GLOB_H
+#define _GLOB_H
+   struct glob_t { size_t gl_pathc=0; char** gl_pathv=nullptr; int gl_offs=0; };
+   inline int  glob(const char*,int,int(*)(const char*,int),glob_t* g){g->gl_pathc=0;return 1;}
    inline void globfree(glob_t*){}
-#endif
-#ifndef _DIRENT_STUB
-#  define _DIRENT_STUB
-   // dirent is provided by mingw/msys2 — no stub needed
-#endif
+#endif  // _GLOB_H
+
+// dirent.h — provided natively by MinGW/MSYS2, no stub needed
 
 #include <windows.h>
 #include <commdlg.h>   // GetOpenFileName / GetSaveFileName
 #include <shellapi.h>  // ShellExecute
 #include <shlobj.h>    // SHGetFolderPath
 #include <sys/stat.h>
+
+// ── Undefine Windows macros that clash with Processing constants ──────────
+// windows.h pollutes the global namespace with short macro names.
+// We undef them all so Processing.h can redeclare them as constexpr ints.
+#undef DIFFERENCE
+#undef BLEND
+#undef ADD
+#undef SUBTRACT
+#undef MULTIPLY
+#undef SCREEN
+#undef DARKEST
+#undef LIGHTEST
+#undef EXCLUSION
+#undef LEFT
+#undef RIGHT
+#undef CENTER
+#undef ROUND
+#undef POINTS
+#undef LINES
+#undef TRIANGLES
+#undef QUADS
+#undef CLOSE
+#undef BASELINE
+#undef IMAGE
+#undef NORMAL
+#undef CROSS
+#undef HAND
+#undef MOVE
+#undef WAIT
+#undef SQUARE
+#undef PROJECT
+#undef MITER
+#undef BEVEL
+#undef RGB
+#undef HSB
+#undef REPLACE
+#undef NONE
+#undef TRANSPARENT
+#undef ERROR
+#undef DELETE
+#undef NEAR
+#undef FAR
+#undef OPEN
+#undef CHORD
+#undef PIE
+#undef TEXT
+#undef BACKSPACE
+#undef TAB
+#undef ENTER
+#undef RETURN
+#undef ESC
+#undef CODED
+// ─────────────────────────────────────────────────────────────────────────
 
 // ── Sleep ──────────────────────────────────────────────────────────────────
 inline void plat_sleep_ms(int ms) { Sleep(ms); }
