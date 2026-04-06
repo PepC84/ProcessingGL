@@ -134,6 +134,34 @@ inline void plat_open_folder(const std::string& path) {
 }
 
 // ── File dialog ────────────────────────────────────────────────────────────
+inline std::string plat_folder_dialog(const std::string& current = ".") {
+    // Use zenity to pick a folder
+    std::string cmd = "zenity --file-selection --directory --title="Open Folder""
+                      " --filename="" + current + "" 2>/dev/null";
+    FILE* p = popen(cmd.c_str(), "r");
+    if (!p) return "";
+    char buf[1024] = {};
+    if (fgets(buf, sizeof(buf), p)) {}
+    pclose(p);
+    std::string r = buf;
+    while (!r.empty() && (r.back()=='
+'||r.back()=='')) r.pop_back();
+    return r;
+}
+
+inline std::string plat_folder_dialog(const std::string& current = ".") {
+    // Use SHBrowseForFolder on Windows
+    BROWSEINFOA bi = {};
+    bi.lpszTitle = "Select Project Folder";
+    bi.ulFlags   = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    LPITEMIDLIST pidl = SHBrowseForFolderA(&bi);
+    if (!pidl) return "";
+    char buf[MAX_PATH] = {};
+    SHGetPathFromIDListA(pidl, buf);
+    CoTaskMemFree(pidl);
+    return buf;
+}
+
 inline std::string plat_file_dialog(bool save, const std::string& def = "") {
     char buf[MAX_PATH] = {};
     if (!def.empty()) strncpy(buf, def.c_str(), MAX_PATH - 1);
@@ -293,6 +321,21 @@ inline void plat_sleep_ms(int ms) { usleep(ms * 1000); }
 
 inline void plat_open_folder(const std::string& path) {
     system(("xdg-open " + path + " >/dev/null 2>&1 &").c_str());
+}
+
+inline std::string plat_folder_dialog(const std::string& current = ".") {
+    // Use zenity to pick a folder
+    std::string cmd = "zenity --file-selection --directory --title="Open Folder""
+                      " --filename="" + current + "" 2>/dev/null";
+    FILE* p = popen(cmd.c_str(), "r");
+    if (!p) return "";
+    char buf[1024] = {};
+    if (fgets(buf, sizeof(buf), p)) {}
+    pclose(p);
+    std::string r = buf;
+    while (!r.empty() && (r.back()=='
+'||r.back()=='')) r.pop_back();
+    return r;
 }
 
 inline std::string plat_file_dialog(bool save, const std::string& def = "") {
