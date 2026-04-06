@@ -526,10 +526,34 @@ fi
 if [[ $WIN -eq 1 ]]; then
     step "Collecting runtime DLLs"
     DLL_DIR="/mingw64/bin"
-    for dll in libglfw3.dll glew32.dll libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
-        if [ -f "$DLL_DIR/$dll" ]; then cp "$DLL_DIR/$dll" . && ok "$dll"
-        else warn "$dll not found"; fi
+    # Collect all DLLs the exe actually depends on
+    NEEDED=$(objdump -p ide.exe 2>/dev/null | grep "DLL Name" | awk '{print $3}' | tr '[:upper:]' '[:lower:]')
+    # Always include these core runtime DLLs
+    CORE_DLLS="libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll"
+    # GL/GLFW/GLEW — try multiple possible names
+    GL_DLLS="glfw3.dll libglfw3.dll glfw3dll.dll libglfw-3.dll
+             glew32.dll libglew32.dll
+             opengl32.dll glu32.dll"
+    ALL_DLLS="$CORE_DLLS $GL_DLLS"
+    COPIED=0
+    for dll in $ALL_DLLS; do
+        if [ -f "$DLL_DIR/$dll" ]; then
+            cp "$DLL_DIR/$dll" . && ok "$dll"
+            COPIED=$((COPIED+1))
+        fi
     done
+    # Also auto-copy any mingw64 DLL the binary links against
+    if [ -n "$NEEDED" ]; then
+        for dll in $NEEDED; do
+            # Capitalise first letter to match Windows DLL names
+            dll_orig=$(ls "$DLL_DIR" 2>/dev/null | grep -i "^${dll}$" | head -1)
+            [ -z "$dll_orig" ] && dll_orig=$(ls "$DLL_DIR" 2>/dev/null | grep -i "${dll}" | head -1)
+            if [ -n "$dll_orig" ] && [ -f "$DLL_DIR/$dll_orig" ] && [ ! -f "./$dll_orig" ]; then
+                cp "$DLL_DIR/$dll_orig" . && ok "$dll_orig (auto)"
+            fi
+        done
+    fi
+    ok "DLL collection done ($COPIED base DLLs copied)"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
