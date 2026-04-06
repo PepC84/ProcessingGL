@@ -345,7 +345,8 @@ static std::vector<Library> libraries = {
     {"stb_truetype","Header-only TTF rasterizer","","#include \"stb_truetype.h\"","curl -sL https://raw.githubusercontent.com/nothings/stb/master/stb_truetype.h -o src/stb_truetype.h",""},
     {"Vim keybindings","Enable vim mode in editor","","// vim mode","",""},
 };
-static bool showLibMgr=false, libScroll=0, installingLib=-1;
+static bool showLibMgr=false;
+static int  libScroll=0, installingLib=-1;
 static std::string libStatus="";
 
 // Package manager helpers (Linux/macOS — Platform.h handles Windows)

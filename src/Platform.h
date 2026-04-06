@@ -135,17 +135,16 @@ inline void plat_open_folder(const std::string& path) {
 
 // ── File dialog ────────────────────────────────────────────────────────────
 inline std::string plat_folder_dialog(const std::string& current = ".") {
-    // Use zenity to pick a folder
-    std::string cmd = "zenity --file-selection --directory --title="Open Folder""
-                      " --filename="" + current + "" 2>/dev/null";
+    std::string cmd = "zenity --file-selection --directory"
+                      " --title=\"Open Folder\""
+                      " --filename=\"" + current + "\" 2>/dev/null";
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return "";
     char buf[1024] = {};
     if (fgets(buf, sizeof(buf), p)) {}
     pclose(p);
     std::string r = buf;
-    while (!r.empty() && (r.back()=='
-'||r.back()=='')) r.pop_back();
+    while (!r.empty() && (r.back() == '\n' || r.back() == '\r')) r.pop_back();
     return r;
 }
 
@@ -324,17 +323,16 @@ inline void plat_open_folder(const std::string& path) {
 }
 
 inline std::string plat_folder_dialog(const std::string& current = ".") {
-    // Use zenity to pick a folder
-    std::string cmd = "zenity --file-selection --directory --title="Open Folder""
-                      " --filename="" + current + "" 2>/dev/null";
+    std::string cmd = "zenity --file-selection --directory"
+                      " --title=\"Open Folder\""
+                      " --filename=\"" + current + "\" 2>/dev/null";
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return "";
     char buf[1024] = {};
     if (fgets(buf, sizeof(buf), p)) {}
     pclose(p);
     std::string r = buf;
-    while (!r.empty() && (r.back()=='
-'||r.back()=='')) r.pop_back();
+    while (!r.empty() && (r.back() == '\n' || r.back() == '\r')) r.pop_back();
     return r;
 }
 
