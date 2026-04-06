@@ -1,4 +1,20 @@
 #pragma once
+
+// Include platform shims first (provides termios/glob stubs on Windows)
+#if __has_include("Platform.h")
+#  include "Platform.h"
+#endif
+
+// Windows (MSVC/MinGW) doesn't define M_PI unless this is set before <cmath>
+#ifndef _USE_MATH_DEFINES
+#  define _USE_MATH_DEFINES
+#endif
+#include <cmath>
+// Fallback in case _USE_MATH_DEFINES wasn't enough (some MinGW configs)
+#ifndef M_PI
+#  define M_PI 3.14159265358979323846
+#endif
+
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -457,9 +473,9 @@ color lerpColor(color c1,color c2,float t);
 // OUTPUT / PRINT
 // =============================================================================
 
-template<typename T>inline void print(const T& v){std::cout<<v;}
-template<typename T>inline void println(const T& v){std::cout<<v<<"\n";}
-inline void println(){std::cout<<"\n";}
+template<typename T>inline void print(const T& v){std::cout<<v;std::cout.flush();}
+template<typename T>inline void println(const T& v){std::cout<<v<<"\n";std::cout.flush();}
+inline void println(){std::cout<<"\n";std::cout.flush();}
 template<typename T>inline void printArray(const std::vector<T>& a){for(size_t i=0;i<a.size();i++)std::cout<<"["<<i<<"] "<<a[i]<<"\n";}
 inline void printArray(const std::string* arr,int len){for(int i=0;i<len;i++)std::cout<<"["<<i<<"] "<<arr[i]<<"\n";}
 inline void printArray(const int* arr,int len){for(int i=0;i<len;i++)std::cout<<"["<<i<<"] "<<arr[i]<<"\n";}

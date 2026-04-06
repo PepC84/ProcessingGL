@@ -109,13 +109,16 @@ case "$PLAT" in
         ;;
     windows)
         info "Installing MinGW-w64 toolchain via pacman..."
-        pacman -S --needed --noconfirm \
-            mingw-w64-x86_64-gcc \
-            mingw-w64-x86_64-glfw \
-            mingw-w64-x86_64-glew \
-            mingw-w64-x86_64-freeglut \
-            mingw-w64-x86_64-make \
-        || warn "pacman had errors — packages may already be installed"
+        # Find pacman — it may not be in PATH when running from setup.bat
+        PACMAN=""
+        for p in             "/usr/bin/pacman"             "/c/msys64/usr/bin/pacman"             "/c/msys2/usr/bin/pacman"             "$(command -v pacman 2>/dev/null)"; do
+            [ -x "$p" ] && { PACMAN="$p"; break; }
+        done
+        if [ -z "$PACMAN" ]; then
+            warn "pacman not found — skipping package install (packages may already be installed)"
+        else
+            "$PACMAN" -S --needed --noconfirm                 mingw-w64-x86_64-gcc                 mingw-w64-x86_64-glfw                 mingw-w64-x86_64-glew                 mingw-w64-x86_64-freeglut                 mingw-w64-x86_64-make             || warn "pacman had errors — packages may already be installed"
+        fi
         ;;
 esac
 
@@ -191,7 +194,7 @@ step "Writing build scripts"
 
 # ── Determine linker flags for this platform ──────────────────────────────
 if [[ $WIN -eq 1 ]]; then
-    LD="-lglfw3 -lglew32 -lopengl32 -lglu32 -lcomdlg32 -lshell32 -lole32 -luuid -mwindows -pthread"
+    LD="-lglfw3 -lglew32 -lopengl32 -lglu32 -lcomdlg32 -lshell32 -lole32 -luuid -mwindows -pthread -D_USE_MATH_DEFINES"
     IDE_OUT="ide.exe"
     SKETCH_EXT=".exe"
 elif [[ $PLAT == macos ]]; then
