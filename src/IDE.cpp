@@ -11,7 +11,7 @@
 #include <mutex>
 #include <atomic>
 
-// Linux-only headers — guarded so old copies compile on Windows via Platform.h stubs
+// Linux-only headers -- guarded so old copies compile on Windows via Platform.h stubs
 #ifdef PLAT_LINUX
 #  include <dirent.h>
 #  include <sys/stat.h>
@@ -24,9 +24,9 @@
 
 namespace Processing {
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // LAYOUT CONSTANTS
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static const int   MENUBAR_H     = 26;
 static const int   TOOLBAR_H     = 40;
@@ -79,16 +79,16 @@ static int   consoleX()   { return (terminalPos==TermPos::Right  ? width-TERM_SI
 static int   consoleW()   { return (terminalPos==TermPos::Right  ? TERM_SIDE_W : width); }
 static int   visLines()   { return std::max(1, (int)(editorH() / lineH())); }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // FILE TREE (SIDEBAR)
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 struct FTEntry { std::string name; bool isDir; bool expanded; int depth; };
 static std::vector<FTEntry> ftEntries;
 static int   ftScroll = 0;
 static std::string ftRoot = ".";
 
-// List a directory — returns {name, isDir} pairs, platform-agnostic
+// List a directory -- returns {name, isDir} pairs, platform-agnostic
 static std::vector<std::pair<std::string,bool>> listDir(const std::string& path) {
     std::vector<std::pair<std::string,bool>> out;
 #ifdef PLAT_WINDOWS
@@ -154,17 +154,17 @@ static void chooseFolderDialog() {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // EDITOR STATE
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static std::vector<std::string> code = {
-    "// ── run once ────────────────────────────────────────",
+    "// -- run once ----------------------------------------",
     "void setup() {",
     "  size(640, 360);",
     "}",
     "",
-    "// ── loops forever ───────────────────────────────────",
+    "// -- loops forever -----------------------------------",
     "void draw() {",
     "  background(102);",
     "  fill(255);",
@@ -176,9 +176,9 @@ static int  curLine = 0, curCol = 0;
 static int  selLine = -1, selCol = -1;
 static int  scrollTop = 0;
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // MULTI-TAB TERMINAL
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 struct Terminal {
     std::string              name;
@@ -196,9 +196,9 @@ static bool&                     hasError  = terminals[0].hasError;
 
 static int consoleSelLine = -1;   // selected line for highlight/copy
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // SKETCH / BUILD STATE
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static bool        modified    = false;
 static std::string currentFile = "";
@@ -271,7 +271,7 @@ static void sketchReaderThread(int /*unused*/) {
         plat_sleep_ms(8);
     }
     if (!partial.empty()) pushLine(partial);
-    { std::lock_guard<std::mutex> lk(outMutex); outLines.push_back("── sketch exited ───────────────────────────────────"); outScroll=std::max(0,(int)outLines.size()-14); }
+    { std::lock_guard<std::mutex> lk(outMutex); outLines.push_back("-- sketch exited -----------------------------------"); outScroll=std::max(0,(int)outLines.size()-14); }
     sketchRunning=false; sketchProc=plat_proc_invalid();
 }
 
@@ -284,9 +284,9 @@ static void pushUndo() {
     redoStack.clear(); modified=true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // VIM MODE
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static bool vimMode   = false;
 static bool vimInsert = false;
@@ -296,16 +296,16 @@ static int      vimVisAnchorLine = 0;
 static int      vimVisAnchorCol  = 0;
 static std::string vimCmd        = "";
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // MENU STATE
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 enum class Menu { None, File, Edit, Sketch, Tools, Libraries };
 static Menu openMenu = Menu::None;
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // SERIAL MONITOR
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static bool              showSerial  = false;
 static plat_serial_t     serialFd    = plat_serial_invalid();
@@ -347,9 +347,9 @@ static void pollSerial() {
 
 static std::vector<std::string> listPorts() { return plat_list_ports(); }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // LIBRARY MANAGER
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 struct Library { std::string name,desc,pkg,header,installCmd,linkFlag; bool installed=false; };
 static std::vector<Library> libraries = {
@@ -373,7 +373,7 @@ static bool showLibMgr=false;
 static int  libScroll=0, installingLib=-1;
 static std::string libStatus="";
 
-// Package manager helpers (Linux/macOS — Platform.h handles Windows)
+// Package manager helpers (Linux/macOS -- Platform.h handles Windows)
 #ifdef PLAT_LINUX
 enum class PkgMgr { Unknown, Apt, Pacman, Dnf, Zypper };
 static PkgMgr detectPkgMgr() {
@@ -432,9 +432,9 @@ static void checkInstalled() {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // CURSOR / SELECTION
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void clamp() { curLine=std::max(0,std::min(curLine,(int)code.size()-1)); curCol=std::max(0,std::min(curCol,(int)code[curLine].size())); }
 static void ensureVis() { if(curLine<scrollTop)scrollTop=curLine; if(curLine>=scrollTop+visLines())scrollTop=curLine-visLines()+1; scrollTop=std::max(0,scrollTop); }
@@ -460,12 +460,12 @@ static void deleteSel() {
     curLine=l0; curCol=c0; clearSel();
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // FILE OPERATIONS
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void newFile() {
-    code={"// ── run once ────────────────────────────────────────","void setup() {","  size(640, 360);","}","","// ── loops forever ───────────────────────────────────","void draw() {","  background(102);"," }"};
+    code={"// -- run once ----------------------------------------","void setup() {","  size(640, 360);","}","","// -- loops forever -----------------------------------","void draw() {","  background(102);"," }"};
     curLine=curCol=scrollTop=0; clearSel(); undoStack.clear(); redoStack.clear();
     currentFile=""; sketchBin="SketchApp"; modified=false;
     outLines.push_back("New sketch.");
@@ -488,51 +488,51 @@ static void openFile(const std::string& path) {
 static std::string sysFileDialog(bool save,const std::string& def="") { return plat_file_dialog(save,def); }
 static std::vector<std::string> listSketches() { return plat_list_sketches(); }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // BUILD & RUN
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
+
+static std::string sanitizeLine(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    // Strip UTF-8 BOM at start
+    if (s.size()>=3 &&
+        (unsigned char)s[0]==0xEF &&
+        (unsigned char)s[1]==0xBB &&
+        (unsigned char)s[2]==0xBF) i = 3;
+    for (; i < s.size(); i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x80) { out += (char)c; continue; }  // plain ASCII -- keep
+        // Multi-byte UTF-8: replace common typographic chars with ASCII
+        if (c == 0xE2 && i+2 < s.size()) {
+            unsigned char b1 = (unsigned char)s[i+1];
+            unsigned char b2 = (unsigned char)s[i+2];
+            if (b1==0x80) {
+                if      (b2==0x98||b2==0x99) { out += '\''; i+=2; }  // curly single quote
+                else if (b2==0x9C||b2==0x9D) { out += '"';  i+=2; }  // curly double quote
+                else if (b2==0x93||b2==0x94) { out += '-';  i+=2; }  // en/em dash
+                else if (b2==0xA6)           { out += '-';  i+=2; }  // horizontal ellipsis (approx)
+                else                         { i+=2; }               // drop other punctuation
+            } else { i+=2; }  // drop other 3-byte sequences
+        } else if (c >= 0xC0 && c <= 0xDF && i+1 < s.size()) {
+            i += 1;  // drop 2-byte sequence
+        } else if (c >= 0xF0 && i+3 < s.size()) {
+            i += 3;  // drop 4-byte sequence
+        }
+        // else: drop stray high byte
+    }
+    return out;
+}
 
 static bool writeSketch() {
     std::ofstream f("src/Sketch_run.cpp");
     if (!f){outLines.push_back("ERROR: cannot write src/Sketch_run.cpp");hasError=true;return false;}
-
-    // Strip BOM (0xEF 0xBB 0xBF) and any stray high bytes from each line
-    // before writing — these cause "stray \200" errors in g++.
-    auto sanitize = [](const std::string& s) -> std::string {
-        std::string out;
-        out.reserve(s.size());
-        size_t i = 0;
-        // Strip UTF-8 BOM at start of line
-        if (s.size()>=3 &&
-            (unsigned char)s[0]==0xEF &&
-            (unsigned char)s[1]==0xBB &&
-            (unsigned char)s[2]==0xBF)
-            i = 3;
-        for (; i < s.size(); i++) {
-            unsigned char c = (unsigned char)s[i];
-            // Keep plain ASCII and common whitespace; drop high bytes
-            if (c < 0x80 || c == '	') out += (char)c;
-            // Replace smart quotes/dashes with ASCII equivalents
-            else if (c==0xE2 && i+2<s.size()) {
-                unsigned char b1=(unsigned char)s[i+1], b2=(unsigned char)s[i+2];
-                if      (b1==0x80 && b2==0x98) { out+='''; i+=2; }  // left single quote
-                else if (b1==0x80 && b2==0x99) { out+='''; i+=2; }  // right single quote
-                else if (b1==0x80 && b2==0x9C) { out+='"';  i+=2; }  // left double quote
-                else if (b1==0x80 && b2==0x9D) { out+='"';  i+=2; }  // right double quote
-                else if (b1==0x80 && b2==0x93) { out+='-';  i+=2; }  // en dash
-                else if (b1==0x80 && b2==0x94) { out+='-';  i+=2; }  // em dash
-                // else: drop unknown multi-byte sequence
-            }
-            // else drop high byte (produces stray \200 etc.)
-        }
-        return out;
-    };
-
     bool hasNS=false;
     for (auto& l:code) if (l.find("namespace Processing")!=std::string::npos){hasNS=true;break;}
     f<<"#include \"Processing.h\"\n";
     if (!hasNS) f<<"namespace Processing {\n";
-    for (auto& l:code) f<<sanitize(l)<<"\n";
+    for (auto& l:code) f<<sanitizeLine(l)<<"\n";
     if (!hasNS) f<<"} // namespace Processing\n";
     return true;
 }
@@ -564,14 +564,14 @@ static void doCompile() {
     }
     pclose(p);
     if (!hasError) {
-        outLines.push_back("✓ Built: ./"+sketchBin+ext+"  (Ctrl+R to run)");
+        outLines.push_back("OK Built: ./"+sketchBin+ext+"  (Ctrl+R to run)");
         int errC=0,warnC=0;
         for (auto& ol:outLines){if(ol.find("error:")!=std::string::npos)errC++;if(ol.find("warning:")!=std::string::npos)warnC++;}
         (void)errC;(void)warnC;
     } else {
         int errC=0,warnC=0;
         for (auto& ol:outLines){if(ol.find("error:")!=std::string::npos)errC++;if(ol.find("warning:")!=std::string::npos)warnC++;}
-        outLines.push_back("✗ Build failed: "+std::to_string(errC)+" error(s)"+(warnC>0?", "+std::to_string(warnC)+" warning(s)":""));
+        outLines.push_back("X Build failed: "+std::to_string(errC)+" error(s)"+(warnC>0?", "+std::to_string(warnC)+" warning(s)":""));
         for (auto& ol:outLines){size_t pp=ol.find("Sketch_run.cpp:");if(pp!=std::string::npos){size_t p2=pp+15;int ln=0;while(p2<ol.size()&&isdigit((unsigned char)ol[p2]))ln=ln*10+(ol[p2++]-'0');if(ln>0&&ln<=(int)code.size()){curLine=ln-1;curCol=0;clamp();ensureVis();}break;}}
     }
     outScroll=std::max(0,(int)outLines.size()-10);
@@ -579,7 +579,7 @@ static void doCompile() {
 
 static void doRun() {
     doCompile();
-    if (hasError){outLines.push_back("✗ Not running — fix errors first.");outScroll=std::max(0,(int)outLines.size()-10);return;}
+    if (hasError){outLines.push_back("X Not running -- fix errors first.");outScroll=std::max(0,(int)outLines.size()-10);return;}
     stopSketch();
 #ifdef _WIN32
     std::string bin="./"+sketchBin+".exe";
@@ -590,20 +590,20 @@ static void doRun() {
     if (!plat_proc_ok(sketchProc)){outLines.push_back("ERROR: failed to start "+bin);return;}
     sketchRunning=true;
     { std::lock_guard<std::mutex> lk(outMutex);
-      outLines.push_back("▶ Running: "+bin);
-      outLines.push_back("──────────────────────────────────────────────────────"); }
+      outLines.push_back("> Running: "+bin);
+      outLines.push_back("------------------------------------------------------"); }
     sketchThread=std::thread(sketchReaderThread,0);
     sketchThread.detach();
     outScroll=std::max(0,(int)outLines.size()-10);
 }
 
 static void doStop() {
-    if (sketchRunning){stopSketch();outLines.push_back("■ Sketch stopped.");outScroll=std::max(0,(int)outLines.size()-10);}
+    if (sketchRunning){stopSketch();outLines.push_back("# Sketch stopped.");outScroll=std::max(0,(int)outLines.size()-10);}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // SYNTAX HIGHLIGHTING
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static const std::vector<std::string> KEYWORDS = {
     "void","int","float","double","bool","char","auto","long","short","unsigned","signed",
@@ -656,9 +656,9 @@ static std::vector<Tok> tokenize(const std::string& ln) {
     return out;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // RAW GL DRAW HELPERS
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void qFill(float x,float y,float w,float h,int r,int g,int b,int a=255){glColor4ub(r,g,b,a);glBegin(GL_QUADS);glVertex2f(x,y);glVertex2f(x+w,y);glVertex2f(x+w,y+h);glVertex2f(x,y+h);glEnd();}
 static void qBorder(float x,float y,float w,float h,int r,int g,int b){glColor4ub(r,g,b,255);glLineWidth(1);glBegin(GL_LINE_LOOP);glVertex2f(x,y);glVertex2f(x+w,y);glVertex2f(x+w,y+h);glVertex2f(x,y+h);glEnd();}
@@ -666,9 +666,9 @@ static void qLine(float x1,float y1,float x2,float y2,int r,int g,int b){glColor
 static void iText(const std::string& s,float x,float y,int r,int g,int b,float sz){textSize(sz);fill(r,g,b);noStroke();text(s,x,y);}
 static float xOf(int ln,int col){textSize(FS);if(col==0)return sbW()+GUTTER_W+4;return sbW()+GUTTER_W+4+textWidth(code[ln].substr(0,col));}
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // SIDEBAR
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void drawSidebar() {
     if (!sidebarVisible) return;
@@ -689,10 +689,10 @@ static void drawSidebar() {
     bool fbHov=(mouseX>=fb_x&&mouseX<=fb_x+fb_w&&mouseY>=fb_y&&mouseY<=fb_y+fb_h);
     qFill(fb_x,fb_y,fb_w,fb_h,fbHov?34:26,fbHov?108:30,fbHov?179:46);
     qBorder(fb_x,fb_y,fb_w,fb_h,fbHov?60:45,fbHov?160:55,fbHov?240:80);
-    iText("Open…",fb_x+5,fb_y+fb_h*0.82f,fbHov?230:160,fbHov?240:170,fbHov?255:210,10.0f);
+    iText("Open...",fb_x+5,fb_y+fb_h*0.82f,fbHov?230:160,fbHov?240:170,fbHov?255:210,10.0f);
 
     // Current root label
-    std::string rootLabel=ftRoot; if (rootLabel.size()>22){rootLabel="…"+rootLabel.substr(rootLabel.size()-20);}
+    std::string rootLabel=ftRoot; if (rootLabel.size()>22){rootLabel="..."+rootLabel.substr(rootLabel.size()-20);}
     iText(rootLabel,8,editorY()+42,150,175,210,FST);
 
     // File tree
@@ -707,15 +707,15 @@ static void drawSidebar() {
         float ry=treeTop+i*rowH, rx=8+fe.depth*12;
         bool hov=(mouseX>=0&&mouseX<sw-6&&mouseY>=ry&&mouseY<ry+rowH);
         if (hov) qFill(0,ry,sw-6,rowH,38,38,38);
-        std::string icon=fe.isDir?(fe.expanded?"▾ ":"▸ "):"  ";
+        std::string icon=fe.isDir?(fe.expanded?"v ":"> "):"  ";
         int ir=fe.isDir?200:160, ig=fe.isDir?180:185, ib=fe.isDir?100:210;
         iText(icon+fe.name,rx,ry+rowH*0.75f,ir,ig,ib,FST);
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // MENU BAR
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 struct MI { std::string label,shortcut; };
 static void drawDropdown(float mx,float my,const std::vector<MI>& items){
@@ -742,16 +742,16 @@ static void drawMenuBar(){
         if (open||hov) qFill(h.x-2,0,h.w,MENUBAR_H,17,108,179);
         iText(h.label,h.x+4,MENUBAR_H*0.74f,228,230,242,FST);
     }
-    if      (openMenu==Menu::File)      drawDropdown(2,MENUBAR_H,{{"New","Ctrl+N"},{"Open...","Ctrl+O"},{"---",""},{"Save","Ctrl+S"},{"Save As...","Ctrl+⇧+S"},{"---",""},{"Exit",""}});
-    else if (openMenu==Menu::Edit)      drawDropdown(42,MENUBAR_H,{{"Undo","Ctrl+Z"},{"Redo","Ctrl+Y"},{"---",""},{"Cut","Ctrl+X"},{"Copy","Ctrl+C"},{"Paste","Ctrl+V"},{"---",""},{"Select All","Ctrl+A"},{"Duplicate Line","Ctrl+D"},{"---",""},{"Toggle Comment","Ctrl+/"},{"Auto Format","Ctrl+⇧+F"}});
+    if      (openMenu==Menu::File)      drawDropdown(2,MENUBAR_H,{{"New","Ctrl+N"},{"Open...","Ctrl+O"},{"---",""},{"Save","Ctrl+S"},{"Save As...","Ctrl+^+S"},{"---",""},{"Exit",""}});
+    else if (openMenu==Menu::Edit)      drawDropdown(42,MENUBAR_H,{{"Undo","Ctrl+Z"},{"Redo","Ctrl+Y"},{"---",""},{"Cut","Ctrl+X"},{"Copy","Ctrl+C"},{"Paste","Ctrl+V"},{"---",""},{"Select All","Ctrl+A"},{"Duplicate Line","Ctrl+D"},{"---",""},{"Toggle Comment","Ctrl+/"},{"Auto Format","Ctrl+^+F"}});
     else if (openMenu==Menu::Sketch)    drawDropdown(84,MENUBAR_H,{{"Build","Ctrl+B"},{"Run","Ctrl+R"},{"Stop","Ctrl+."},{"---",""},{"Show Folder",""},{"Export Binary",""}});
-    else if (openMenu==Menu::Tools)     drawDropdown(138,MENUBAR_H,{{"Serial Monitor","Ctrl+⇧+M"},{"---",""},{"Toggle Vim Mode","Ctrl+⇧+V"},{"Auto Format","Ctrl+⇧+F"},{"---",""},{"Increase Font","Ctrl+="},{"Decrease Font","Ctrl+-"}});
-    else if (openMenu==Menu::Libraries) drawDropdown(182,MENUBAR_H,{{"Manage Libraries...","Ctrl+⇧+L"},{"---",""},{"Add #include to Sketch",""}});
+    else if (openMenu==Menu::Tools)     drawDropdown(138,MENUBAR_H,{{"Serial Monitor","Ctrl+^+M"},{"---",""},{"Toggle Vim Mode","Ctrl+^+V"},{"Auto Format","Ctrl+^+F"},{"---",""},{"Increase Font","Ctrl+="},{"Decrease Font","Ctrl+-"}});
+    else if (openMenu==Menu::Libraries) drawDropdown(182,MENUBAR_H,{{"Manage Libraries...","Ctrl+^+L"},{"---",""},{"Add #include to Sketch",""}});
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // TOOLBAR
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void drawToolbar(){
     int ty=MENUBAR_H;
@@ -773,26 +773,26 @@ static void drawToolbar(){
     bool termRight=(terminalPos==TermPos::Right);
     qFill(tpbx,tpby,tpbw,tpbh,tpHov?44:30,tpHov?46:32,tpHov?62:46);
     qBorder(tpbx,tpby,tpbw,tpbh,65,65,65);
-    iText(termRight?"⊞ Bottom":"⊟ Right",tpbx+6,tpby+tpbh*0.72f,160,170,210,FST);
+    iText(termRight?"[=] Bottom":"[|] Right",tpbx+6,tpby+tpbh*0.72f,160,170,210,FST);
     // Build
     float bx=width-196,by=ty+6,bh=TOOLBAR_H-12,bw=92;
     bool bHov=(mouseX>=bx&&mouseX<=bx+bw&&mouseY>=by&&mouseY<=by+bh);
     qFill(bx,by,bw,bh,bHov?217:160,bHov?119:80,bHov?87:55);qBorder(bx,by,bw,bh,bHov?217:180,bHov?119:90,bHov?87:55);
-    iText("▶ Build",bx+10,by+bh*0.72f,255,235,225,FSS);
+    iText("> Build",bx+10,by+bh*0.72f,255,235,225,FSS);
     // Run
     float rx=width-96;
     bool rHov=(mouseX>=rx&&mouseX<=rx+bw&&mouseY>=by&&mouseY<=by+bh);
     qFill(rx,by,bw,bh,rHov?25:17,rHov?130:108,rHov?210:179);qBorder(rx,by,bw,bh,rHov?70:40,rHov?160:120,rHov?220:180);
-    iText("▶ Run",rx+14,by+bh*0.72f,230,240,255,FSS);
+    iText("> Run",rx+14,by+bh*0.72f,230,240,255,FSS);
     // Status dot
     if (sketchRunning) qFill(width-210,by+bh/2-5,10,10,255,160,0);
     else if (hasError) qFill(width-210,by+bh/2-5,10,10,220,60,60);
-    else if (!outLines.empty()&&outLines.back().find("✓")!=std::string::npos) qFill(width-210,by+bh/2-5,10,10,60,200,60);
+    else if (!outLines.empty()&&outLines.back().find("OK")!=std::string::npos) qFill(width-210,by+bh/2-5,10,10,60,200,60);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // STATUS BAR
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void drawStatus(){
     int sy=statusY();
@@ -800,16 +800,16 @@ static void drawStatus(){
     qLine(0,sy,width,sy,55,55,55);
     std::string s="Ln "+std::to_string(curLine+1)+"  Col "+std::to_string(curCol+1)+"  |  "+std::to_string((int)code.size())+" lines";
     if (!currentFile.empty()) s+="  |  "+currentFile;
-    if (!sketchBin.empty())   s+="  →  ./"+sketchBin;
+    if (!sketchBin.empty())   s+="  >  ./"+sketchBin;
     iText(s,8,sy+STATUS_H*0.76f,125,130,158,FST);
-    std::string right=(plat_serial_ok(serialFd)?"⚡ "+serialPort:"No port")+"  UTF-8  C++17";
+    std::string right=(plat_serial_ok(serialFd)?"! "+serialPort:"No port")+"  UTF-8  C++17";
     textSize(FST); float rw=textWidth(right);
     iText(right,width-rw-8,sy+STATUS_H*0.76f,plat_serial_ok(serialFd)?80:90,plat_serial_ok(serialFd)?210:95,plat_serial_ok(serialFd)?80:110,FST);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // EDITOR
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void drawEditor(){
     int ey=editorY(),eh=editorH();
@@ -875,9 +875,9 @@ static void drawEditor(){
     if ((int)code.size()>vis){float sbH=std::max(14.0f,(float)vis/code.size()*eh);float sbY=ey+(float)scrollTop/code.size()*eh;qFill(ex+ew-8,sbY,8,sbH,80,80,80);}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // CONSOLE
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void drawConsole(){
     // Snapshot outLines for thread safety
@@ -918,10 +918,10 @@ static void drawConsole(){
     fill(ntHov?200:120,ntHov?210:130,ntHov?255:180); text("+",tx+5,cy+4+TAB_H-6);
 
     // Running indicator
-    if (sketchRunning){iText("● RUNNING",cx+cw-200,cy+4+TAB_H*0.75f,80,210,100,FST);}
+    if (sketchRunning){iText("* RUNNING",cx+cw-200,cy+4+TAB_H*0.75f,80,210,100,FST);}
 
     // Stop button (while running)
-    if (sketchRunning){float stx=cx+cw-168,sty2=cy+3,stw=60,sth=16;bool sthov=(mouseX>=stx&&mouseX<=stx+stw&&mouseY>=sty2&&mouseY<=sty2+sth);qFill(stx,sty2,stw,sth,sthov?160:110,sthov?40:30,sthov?40:30);qBorder(stx,sty2,stw,sth,200,60,60);iText("■ Stop",stx+6,sty2+sth*0.82f,255,180,180,10.0f);}
+    if (sketchRunning){float stx=cx+cw-168,sty2=cy+3,stw=60,sth=16;bool sthov=(mouseX>=stx&&mouseX<=stx+stw&&mouseY>=sty2&&mouseY<=sty2+sth);qFill(stx,sty2,stw,sth,sthov?160:110,sthov?40:30,sthov?40:30);qBorder(stx,sty2,stw,sth,200,60,60);iText("# Stop",stx+6,sty2+sth*0.82f,255,180,180,10.0f);}
 
     // Copy all
     float cbx=cx+cw-84,cby2=cy+7,cbw2=76,cbh=16;
@@ -943,9 +943,9 @@ static void drawConsole(){
         bool sel=(li==consoleSelLine);
         if (sel)      qFill(cx+4,rowTop,cw-10,lh,40,60,110);
         else if (hov) qFill(cx+4,rowTop,cw-10,lh,30,30,30);
-        bool isErr=s.find("error:")!=std::string::npos||s.find("✗")!=std::string::npos;
+        bool isErr=s.find("error:")!=std::string::npos||s.find("X")!=std::string::npos;
         bool isWarn=s.find("warning:")!=std::string::npos;
-        bool isOk=s.find("✓")!=std::string::npos||s.find("successful")!=std::string::npos;
+        bool isOk=s.find("OK")!=std::string::npos||s.find("successful")!=std::string::npos;
         bool isCmd=!s.empty()&&s[0]=='$';
         bool isRun=s.find("Running:")!=std::string::npos;
         bool isSep=(s.size()>=3&&(unsigned char)s[0]==0xe2&&(unsigned char)s[1]==0x94);
@@ -956,7 +956,7 @@ static void drawConsole(){
         else if (isOk||isRun){r=80;g=215;b=100;}
         else if (isCmd)   {r=90;g=170;b=255;}
         else if (isSep)   {r=55;g=58;b=72;}
-        else if (!isBuild){r=228;g=220;b=160;}  // sketch output — warm yellow
+        else if (!isBuild){r=228;g=220;b=160;}  // sketch output -- warm yellow
         textSize(FSS);
         float maxW=(float)(cw-30);
         if (textWidth(s)>maxW){int lo=0,hi=(int)s.size();while(lo<hi-1){int mid=(lo+hi)/2;if(textWidth(s.substr(0,mid))<maxW)lo=mid;else hi=mid;}s=s.substr(0,lo);if(!s.empty())s.back()='>';}
@@ -966,9 +966,9 @@ static void drawConsole(){
     if ((int)tlines.size()>visOut){float th=contentH;float sbH=std::max(6.0f,(float)visOut/tlines.size()*th);float sbY=cy+4+TAB_H+(float)tscroll/tlines.size()*th;qFill(cx+cw-6,cy+4+TAB_H,6,th,38,38,38);qFill(cx+cw-6,sbY,6,sbH,80,80,80);}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // SERIAL MONITOR OVERLAY
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void drawSerialMonitor(){
     pollSerial();
@@ -980,7 +980,7 @@ static void drawSerialMonitor(){
     iText("Serial Monitor",px+14,py+25,222,228,255,FS);
     bool xhov=mouseX>=px+pw-32&&mouseX<=px+pw-6&&mouseY>=py+6&&mouseY<=py+30;
     qFill(px+pw-32,py+6,26,24,xhov?190:78,45,52);qBorder(px+pw-32,py+6,26,24,xhov?240:110,55,60);
-    iText("✕",px+pw-24,py+23,240,242,248,FSS);
+    iText("x",px+pw-24,py+23,240,242,248,FSS);
     float portY=py+46;
     qFill(px,portY,pw,36,30,30,30);qLine(px,portY+36,px+pw,portY+36,52,52,52);
     iText("Port:",px+10,portY+24,148,155,185,FST);
@@ -997,8 +997,8 @@ static void drawSerialMonitor(){
     bool chov=(mouseX>=cbx2&&mouseX<=cbx2+cbw2&&mouseY>=cby2&&mouseY<=cby2+cbh2);
     qFill(cbx2,cby2,cbw2,cbh2,conn?(chov?130:95):(chov?32:20),conn?(chov?45:35):(chov?128:96),conn?(chov?45:35):(chov?218:175));
     qBorder(cbx2,cby2,cbw2,cbh2,conn?150:45,conn?55:148,conn?55:240);
-    iText(conn?"⏹ Disconnect":"▶ Connect",cbx2+8,cby2+cbh2*0.76f,conn?255:210,conn?160:235,conn?160:255,FST);
-    if (conn) iText("⚡ "+serialPort,px+54,baudY+24,100,220,100,FST);
+    iText(conn?"# Disconnect":"> Connect",cbx2+8,cby2+cbh2*0.76f,conn?255:210,conn?160:235,conn?160:255,FST);
+    if (conn) iText("! "+serialPort,px+54,baudY+24,100,220,100,FST);
     float logy=baudY+42,logh=ph-210;
     qFill(px,logy,pw,logh,16,16,16);qBorder(px,logy,pw,logh,50,50,50);
     float llh=FST*1.6f; int visLog=(int)((logh-8)/llh);
@@ -1008,15 +1008,15 @@ static void drawSerialMonitor(){
     float sendY=logy+logh+4;
     qFill(px,sendY,pw,44,28,30,42);qBorder(px,sendY,pw,44,50,52,68);
     float inpW=pw-176;qFill(px+8,sendY+8,inpW,28,16,17,24);qBorder(px+8,sendY+8,inpW,28,conn?55:40,conn?85:44,conn?180:60);
-    if (conn){fill(215,220,238);textSize(FSS);text(serialInput+"▌",px+14,sendY+26);}
+    if (conn){fill(215,220,238);textSize(FSS);text(serialInput+"|",px+14,sendY+26);}
     else iText("Connect to a port first",px+14,sendY+26,90,95,120,FST);
     float sx2=px+pw-162,sw2=72;bool sbHov=(mouseX>=sx2&&mouseX<=sx2+sw2&&mouseY>=sendY+8&&mouseY<=sendY+36);qFill(sx2,sendY+8,sw2,28,sbHov?36:22,sbHov?110:78,sbHov?205:165);qBorder(sx2,sendY+8,sw2,28,45,125,215);iText("Send",sx2+16,sendY+25,200,225,255,FSS);
     float cx2b=px+pw-82,cw2b=72;bool clHov=(mouseX>=cx2b&&mouseX<=cx2b+cw2b&&mouseY>=sendY+8&&mouseY<=sendY+36);qFill(cx2b,sendY+8,cw2b,28,clHov?72:48,clHov?38:28,clHov?38:28);qBorder(cx2b,sendY+8,cw2b,28,105,48,48);iText("Clear",cx2b+12,sendY+25,225,175,175,FSS);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // LIBRARY MANAGER OVERLAY
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void drawLibMgr(){
     glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
@@ -1026,7 +1026,7 @@ static void drawLibMgr(){
     qFill(px,py,pw,32,40,42,54);qLine(px,py+32,px+pw,py+32,60,62,78);
     iText("Library Manager",px+12,py+23,228,232,255,FS);
     bool xhov=mouseX>=px+pw-28&&mouseX<=px+pw-8&&mouseY>=py+6&&mouseY<=py+26;
-    qFill(px+pw-28,py+6,20,20,xhov?200:85,50,58);iText("✕",px+pw-21,py+21,240,242,248,FSS);
+    qFill(px+pw-28,py+6,20,20,xhov?200:85,50,58);iText("x",px+pw-21,py+21,240,242,248,FSS);
     if (!libStatus.empty()){qFill(px+4,py+36,pw-8,18,26,46,26);qBorder(px+4,py+36,pw-8,18,48,118,48);iText(libStatus,px+10,py+49,128,220,128,FST);}
     float ly=py+58,rowH=34;int visLib=(int)((ph-66)/rowH);
     libScroll=std::max(0,std::min(libScroll,std::max(0,(int)libraries.size()-visLib)));
@@ -1039,17 +1039,17 @@ static void drawLibMgr(){
         std::string nm=lib.name;textSize(FST);while(nm.size()>1&&textWidth(nm)>165)nm.pop_back();iText(nm,px+10,ry+rowH*0.72f,208,212,238,FST);
         std::string desc=lib.desc;while(desc.size()>1&&textWidth(desc)>pw-300)desc.pop_back();if(desc.size()<lib.desc.size()&&!desc.empty())desc.back()='.';iText(desc,px+180,ry+rowH*0.72f,152,155,178,FST);
         float bx2=px+pw-106,by2=ry+5,bw2=98,bh2=rowH-10;
-        if (lib.name=="Vim keybindings"){bool ton=vimMode;qFill(bx2,by2,bw2,bh2,ton?30:25,ton?90:68,ton?40:155);qBorder(bx2,by2,bw2,bh2,ton?50:40,ton?160:110,ton?60:220);iText(ton?"✓ Enabled":"Enable",bx2+8,by2+bh2*0.72f,ton?140:200,ton?240:224,ton?140:255,FST);}
+        if (lib.name=="Vim keybindings"){bool ton=vimMode;qFill(bx2,by2,bw2,bh2,ton?30:25,ton?90:68,ton?40:155);qBorder(bx2,by2,bw2,bh2,ton?50:40,ton?160:110,ton?60:220);iText(ton?"OK Enabled":"Enable",bx2+8,by2+bh2*0.72f,ton?140:200,ton?240:224,ton?140:255,FST);}
         else if (lib.installed){bool ahov=(mouseX>=bx2&&mouseX<=bx2+bw2&&mouseY>=by2&&mouseY<=by2+bh2);qFill(bx2,by2,bw2,bh2,ahov?38:28,ahov?110:88,ahov?40:32);qBorder(bx2,by2,bw2,bh2,48,158,58);iText("+ Add #include",bx2+4,by2+bh2*0.72f,136,238,148,10.0f);}
-        else if (li==installingLib){qFill(bx2,by2,bw2,bh2,96,78,18);iText("Installing…",bx2+4,by2+bh2*0.72f,238,208,98,FST);}
-        else{bool ibhov=(mouseX>=bx2&&mouseX<=bx2+bw2&&mouseY>=by2&&mouseY<=by2+bh2);qFill(bx2,by2,bw2,bh2,ibhov?38:22,ibhov?98:68,ibhov?198:158);qBorder(bx2,by2,bw2,bh2,ibhov?78:48,ibhov?158:108,ibhov?255:210);iText("↓ Install",bx2+12,by2+bh2*0.72f,198,222,255,FST);}
+        else if (li==installingLib){qFill(bx2,by2,bw2,bh2,96,78,18);iText("Installing...",bx2+4,by2+bh2*0.72f,238,208,98,FST);}
+        else{bool ibhov=(mouseX>=bx2&&mouseX<=bx2+bw2&&mouseY>=by2&&mouseY<=by2+bh2);qFill(bx2,by2,bw2,bh2,ibhov?38:22,ibhov?98:68,ibhov?198:158);qBorder(bx2,by2,bw2,bh2,ibhov?78:48,ibhov?158:108,ibhov?255:210);iText("v Install",bx2+12,by2+bh2*0.72f,198,222,255,FST);}
     }
     if ((int)libraries.size()>visLib){float th=visLib*rowH;float sbH=std::max(12.0f,(float)visLib/libraries.size()*th);float sbY=ly+(float)libScroll/libraries.size()*th;qFill(px+pw-6,ly,6,th,40,42,55);qFill(px+pw-6,sbY,6,sbH,88,92,128);}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // FILE PICKER
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static bool fpShow=false,fpSave=false;
 static std::string fpInput="";
@@ -1059,18 +1059,18 @@ static void drawFilePicker(){
     qFill(0,cy,width,CONSOLE_H,22,22,22);qFill(0,cy,width,3,17,108,179);qLine(0,cy+3,width,cy+3,17,108,179);
     iText(fpSave?"Save Sketch As:":"Open Sketch:",10,cy+20,188,198,238,FSS);
     qFill(10,cy+25,width-94,26,16,17,24);qBorder(10,cy+25,width-94,26,17,108,179);
-    fill(220,224,240);textSize(FSS);text(fpInput+"▌",16,cy+42);
+    fill(220,224,240);textSize(FSS);text(fpInput+"|",16,cy+42);
     float bbx=width-78,bby=cy+25,bbw=68,bbh=26;
     bool bbhov=(mouseX>=bbx&&mouseX<=bbx+bbw&&mouseY>=bby&&mouseY<=bby+bbh);
-    qFill(bbx,bby,bbw,bbh,bbhov?38:22,bbhov?98:68,bbhov?198:158);qBorder(bbx,bby,bbw,bbh,58,118,218);iText("Browse…",bbx+4,bby+bbh*0.76f,198,218,255,FST);
+    qFill(bbx,bby,bbw,bbh,bbhov?38:22,bbhov?98:68,bbhov?198:158);qBorder(bbx,bby,bbw,bbh,58,118,218);iText("Browse...",bbx+4,bby+bbh*0.76f,198,218,255,FST);
     iText("Enter=confirm   Esc=cancel   or click file:",10,cy+62,108,112,142,FST);
     auto files=listSketches();
     for (int i=0;i<(int)files.size()&&i<6;i++){float ry=cy+74+i*19;bool hov=(mouseX>=10&&mouseX<=380&&mouseY>=ry&&mouseY<ry+19);if(hov)qFill(8,ry,374,18,30,78,158);iText(files[i],14,ry+14,hov?240:158,hov?244:165,hov?255:198,FST);}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // SETUP / DRAW
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 void setup(){
     size(1080,740);
@@ -1112,9 +1112,9 @@ void draw(){
     if (showLibMgr) drawLibMgr();
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // MOUSE
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static bool dragging=false;
 static int  clickCount   = 0;
@@ -1129,7 +1129,7 @@ static void mouseToLC(int& li,int& col){
 }
 
 void mousePressed(){
-    // ── Serial monitor ─────────────────────────────────────────────────
+    // -- Serial monitor -------------------------------------------------
     if (showSerial){
         float pw=640,ph=500,px=(width-pw)*0.5f,py=(height-ph)*0.5f;
         if (mouseX>=px+pw-32&&mouseX<=px+pw-6&&mouseY>=py+6&&mouseY<=py+30){showSerial=false;return;}
@@ -1149,7 +1149,7 @@ void mousePressed(){
         return;
     }
 
-    // ── Library manager ────────────────────────────────────────────────
+    // -- Library manager ------------------------------------------------
     if (showLibMgr){
         float pw=660,ph=460,px=(width-pw)*0.5f,py=(height-ph)*0.5f;
         if (mouseX>=px+pw-28&&mouseX<=px+pw-8&&mouseY>=py+6&&mouseY<=py+26){showLibMgr=false;return;}
@@ -1160,17 +1160,17 @@ void mousePressed(){
             if (mouseX>=bx2&&mouseX<=bx2+bw2&&mouseY>=by2&&mouseY<=by2+bh2){
                 if (lib.name=="Vim keybindings"){vimMode=!vimMode;vimInsert=false;lib.installed=vimMode;libStatus=vimMode?"Vim mode enabled":"Vim mode disabled";return;}
                 if (lib.installed){int insertAt=0;for(int ci=0;ci<(int)code.size();ci++)if(code[ci].find("#include")!=std::string::npos)insertAt=ci+1;code.insert(code.begin()+insertAt,lib.header);modified=true;libStatus="Added: "+lib.header;outLines.push_back("Added: "+lib.header);}
-                else{installingLib=li;libStatus="Installing "+lib.name+"…";std::string cmd=lib.pkg.empty()?lib.installCmd:buildInstallCmd(lib.pkg);outLines.push_back("$ "+cmd);int ret=system(cmd.c_str());lib.installed=(ret==0);if(ret==0){checkInstalled();libStatus="✓ Installed: "+lib.name;outLines.push_back("✓ Installed: "+lib.name);if(!lib.linkFlag.empty()&&buildFlags.find(lib.linkFlag)==std::string::npos)buildFlags+=" "+lib.linkFlag;}else{libStatus="✗ Failed: "+cmd;outLines.push_back("✗ Failed. Try: "+cmd);}installingLib=-1;}
+                else{installingLib=li;libStatus="Installing "+lib.name+"...";std::string cmd=lib.pkg.empty()?lib.installCmd:buildInstallCmd(lib.pkg);outLines.push_back("$ "+cmd);int ret=system(cmd.c_str());lib.installed=(ret==0);if(ret==0){checkInstalled();libStatus="OK Installed: "+lib.name;outLines.push_back("OK Installed: "+lib.name);if(!lib.linkFlag.empty()&&buildFlags.find(lib.linkFlag)==std::string::npos)buildFlags+=" "+lib.linkFlag;}else{libStatus="X Failed: "+cmd;outLines.push_back("X Failed. Try: "+cmd);}installingLib=-1;}
                 return;
             }
         }
         return;
     }
 
-    // ── Sidebar resize ─────────────────────────────────────────────────
+    // -- Sidebar resize -------------------------------------------------
     if (sidebarVisible&&mouseX>=SIDEBAR_W-4&&mouseX<=SIDEBAR_W+2&&mouseY>=editorY()){sidebarResizing=true;sidebarResizeAnchorX=mouseX;sidebarResizeAnchorW=SIDEBAR_W;return;}
 
-    // ── Sidebar file tree ──────────────────────────────────────────────
+    // -- Sidebar file tree ----------------------------------------------
     if (sidebarVisible&&mouseX<SIDEBAR_W&&mouseY>=editorY()+52){
         float rowH=FSS*1.7f;int vi=(int)((mouseY-(editorY()+52))/rowH);int fi=ftScroll+vi;
         if (fi>=0&&fi<(int)ftEntries.size()){
@@ -1178,13 +1178,13 @@ void mousePressed(){
             if (fe.isDir){fe.expanded=!fe.expanded;populateTree();}
             else openFile(ftRoot+"/"+fe.name);
         }
-        // "Open…" button
+        // "Open..." button
         if (mouseY>=editorY()+4&&mouseY<=editorY()+20&&mouseX>=SIDEBAR_W-64&&mouseX<=SIDEBAR_W-6)
             chooseFolderDialog();
         return;
     }
 
-    // ── File picker ────────────────────────────────────────────────────
+    // -- File picker ----------------------------------------------------
     if (fpShow){
         int cy=consoleY();float bbx=width-78,bby=cy+25,bbw=68,bbh=26;
         if (mouseX>=bbx&&mouseX<=bbx+bbw&&mouseY>=bby&&mouseY<=bby+bbh){std::string path=sysFileDialog(fpSave,fpSave?fpInput:"");if(!path.empty()){if(fpSave)saveFile(path);else openFile(path);fpShow=false;}return;}
@@ -1193,7 +1193,7 @@ void mousePressed(){
         return;
     }
 
-    // ── Menu bar ───────────────────────────────────────────────────────
+    // -- Menu bar -------------------------------------------------------
     if (mouseY<MENUBAR_H){
         struct MH{std::string label;Menu id;float x=0,w=0;};
         std::vector<MH> hs={{"File",Menu::File},{"Edit",Menu::Edit},{"Sketch",Menu::Sketch},{"Tools",Menu::Tools},{"Libraries",Menu::Libraries}};
@@ -1202,7 +1202,7 @@ void mousePressed(){
         openMenu=Menu::None;return;
     }
 
-    // ── Dropdown items ─────────────────────────────────────────────────
+    // -- Dropdown items -------------------------------------------------
     if (openMenu!=Menu::None){
         float mx=0;std::vector<MI> items;
         if      (openMenu==Menu::File)      {mx=2;   items={{"New",""},{"Open...",""},{"---",""},{"Save",""},{"Save As...",""},{"---",""},{"Exit",""}};}
@@ -1233,7 +1233,7 @@ void mousePressed(){
         openMenu=Menu::None;return;
     }
 
-    // ── Toolbar ────────────────────────────────────────────────────────
+    // -- Toolbar --------------------------------------------------------
     int ty=MENUBAR_H;float by=ty+6,bh=TOOLBAR_H-12,bw=92;
     if (mouseY>=by&&mouseY<=by+bh){
         if (mouseX>=width-196&&mouseX<=width-196+bw){doCompile();return;}
@@ -1241,7 +1241,7 @@ void mousePressed(){
         if (mouseX>=width-300&&mouseX<=width-214)   {terminalPos=(terminalPos==TermPos::Bottom)?TermPos::Right:TermPos::Bottom;return;}
     }
 
-    // ── Console area ───────────────────────────────────────────────────
+    // -- Console area ---------------------------------------------------
     {
         int cy=consoleY(),cx2=consoleX();
         // Resize handles
@@ -1263,7 +1263,7 @@ void mousePressed(){
         if (mouseY>=cy+4+TAB_H&&mouseY<height){float lh2=FSS*1.5f;int vi=(int)((mouseY-(cy+4+TAB_H))/lh2);auto& tlines=terminals[activeTab].lines;auto& tscroll=terminals[activeTab].scroll;int li=tscroll+vi;if(li>=0&&li<(int)tlines.size()){consoleSelLine=li;std::lock_guard<std::mutex> lk(outMutex);glfwSetClipboardString(glfwGetCurrentContext(),tlines[li].c_str());}return;}
     }
 
-    // ── Editor ─────────────────────────────────────────────────────────
+    // -- Editor ---------------------------------------------------------
     if (mouseY>=editorY()&&mouseY<editorY()+editorH()){
         // Minimap click
         int ex2=sbW(),ew=editorFullW();float mmx=(float)(ex2+ew-60-8);
@@ -1321,9 +1321,9 @@ void mouseWheel(int delta){
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 // KEYBOARD
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
 static void autoFormat(){
     pushUndo();int depth=0;
