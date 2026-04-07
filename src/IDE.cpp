@@ -88,24 +88,48 @@ static std::vector<FTEntry> ftEntries;
 static int   ftScroll = 0;
 static std::string ftRoot = ".";
 
+// List a directory — returns {name, isDir} pairs, platform-agnostic
+static std::vector<std::pair<std::string,bool>> listDir(const std::string& path) {
+    std::vector<std::pair<std::string,bool>> out;
+#ifdef PLAT_WINDOWS
+    WIN32_FIND_DATAA fd;
+    std::string pat = path + "\\*";
+    HANDLE h = FindFirstFileA(pat.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        std::string n = fd.cFileName;
+        if (n=="."||n=="..") continue;
+        if (!n.empty()&&n[0]=='.') continue;
+        bool isDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        out.push_back({n, isDir});
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    DIR* d = opendir(path.c_str()); if (!d) return out;
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        std::string n = e->d_name;
+        if (n=="."||n=="..") continue;
+        if (!n.empty()&&n[0]=='.') continue;
+        std::string full = path+"/"+n;
+        struct stat st; stat(full.c_str(), &st);
+        out.push_back({n, S_ISDIR(st.st_mode)!=0});
+    }
+    closedir(d);
+#endif
+    return out;
+}
+
 static void populateTree() {
     ftEntries.clear();
     auto addDir = [&](const std::string& path, int depth, auto& self) -> void {
         if (depth > 2) return;
-        DIR* d = opendir(path.c_str());
-        if (!d) return;
-        struct dirent* e;
+        auto entries = listDir(path);
         std::vector<std::string> dirs, files;
-        while ((e = readdir(d))) {
-            std::string n = e->d_name;
-            if (n=="."||n=="..") continue;
-            if (!n.empty() && n[0]=='.') continue;
-            std::string full = path+"/"+n;
-            struct stat st; stat(full.c_str(), &st);
-            if (S_ISDIR(st.st_mode)) dirs.push_back(n);
-            else                     files.push_back(n);
+        for (auto& [name, isDir] : entries) {
+            if (isDir) dirs.push_back(name);
+            else       files.push_back(name);
         }
-        closedir(d);
         std::sort(dirs.begin(), dirs.end());
         std::sort(files.begin(), files.end());
         for (auto& dn : dirs) {
@@ -471,11 +495,44 @@ static std::vector<std::string> listSketches() { return plat_list_sketches(); }
 static bool writeSketch() {
     std::ofstream f("src/Sketch_run.cpp");
     if (!f){outLines.push_back("ERROR: cannot write src/Sketch_run.cpp");hasError=true;return false;}
+
+    // Strip BOM (0xEF 0xBB 0xBF) and any stray high bytes from each line
+    // before writing — these cause "stray \200" errors in g++.
+    auto sanitize = [](const std::string& s) -> std::string {
+        std::string out;
+        out.reserve(s.size());
+        size_t i = 0;
+        // Strip UTF-8 BOM at start of line
+        if (s.size()>=3 &&
+            (unsigned char)s[0]==0xEF &&
+            (unsigned char)s[1]==0xBB &&
+            (unsigned char)s[2]==0xBF)
+            i = 3;
+        for (; i < s.size(); i++) {
+            unsigned char c = (unsigned char)s[i];
+            // Keep plain ASCII and common whitespace; drop high bytes
+            if (c < 0x80 || c == '	') out += (char)c;
+            // Replace smart quotes/dashes with ASCII equivalents
+            else if (c==0xE2 && i+2<s.size()) {
+                unsigned char b1=(unsigned char)s[i+1], b2=(unsigned char)s[i+2];
+                if      (b1==0x80 && b2==0x98) { out+='''; i+=2; }  // left single quote
+                else if (b1==0x80 && b2==0x99) { out+='''; i+=2; }  // right single quote
+                else if (b1==0x80 && b2==0x9C) { out+='"';  i+=2; }  // left double quote
+                else if (b1==0x80 && b2==0x9D) { out+='"';  i+=2; }  // right double quote
+                else if (b1==0x80 && b2==0x93) { out+='-';  i+=2; }  // en dash
+                else if (b1==0x80 && b2==0x94) { out+='-';  i+=2; }  // em dash
+                // else: drop unknown multi-byte sequence
+            }
+            // else drop high byte (produces stray \200 etc.)
+        }
+        return out;
+    };
+
     bool hasNS=false;
     for (auto& l:code) if (l.find("namespace Processing")!=std::string::npos){hasNS=true;break;}
     f<<"#include \"Processing.h\"\n";
     if (!hasNS) f<<"namespace Processing {\n";
-    for (auto& l:code) f<<l<<"\n";
+    for (auto& l:code) f<<sanitize(l)<<"\n";
     if (!hasNS) f<<"} // namespace Processing\n";
     return true;
 }
@@ -1021,7 +1078,25 @@ void setup(){
     frameRate(60);
     checkInstalled();
     outLines.push_back("gcc-processing IDE ready.");
-    outLines.push_back("Ctrl+B build  |  Ctrl+R run  |  Ctrl+. stop  |  Ctrl+⇧+M serial  |  Ctrl+⇧+L libs");
+    outLines.push_back("Ctrl+B build  |  Ctrl+R run  |  Ctrl+. stop  |  Ctrl+Shift+M serial  |  Ctrl+Shift+L libs");
+
+#ifdef _WIN32
+    // Wire all event callbacks via std::function on Windows
+    // (Linux/macOS uses __attribute__((weak)) and doesn't need this)
+    registerCallbacks(
+        keyPressed,    // kp
+        keyReleased,   // kr
+        keyTyped,      // kt
+        mousePressed,  // mp
+        mouseReleased, // mr
+        mouseClicked,  // mc
+        mouseMoved,    // mm
+        mouseDragged,  // md
+        mouseWheel,    // mw
+        windowMoved,   // wm
+        windowResized  // wr
+    );
+#endif
 }
 
 void draw(){
@@ -1042,6 +1117,9 @@ void draw(){
 // ═══════════════════════════════════════════════════════════════════════════
 
 static bool dragging=false;
+static int  clickCount   = 0;
+static double lastClickTime = 0.0;
+
 static void mouseToLC(int& li,int& col){
     float lh=lineH();
     li=scrollTop+(int)((mouseY-editorY())/lh);
@@ -1190,7 +1268,33 @@ void mousePressed(){
         // Minimap click
         int ex2=sbW(),ew=editorFullW();float mmx=(float)(ex2+ew-60-8);
         if (mouseX>=mmx&&mouseX<=mmx+60){float frac=(mouseY-editorY())/(float)editorH();curLine=(int)(frac*code.size());clamp();ensureVis();return;}
-        int li,col;mouseToLC(li,col);curLine=li;curCol=col;selLine=li;selCol=col;dragging=true;clamp();
+
+        // Click count detection (single / double / triple)
+        double now=glfwGetTime();
+        if (now-lastClickTime<0.35) clickCount++; else clickCount=1;
+        lastClickTime=now;
+
+        int li,col; mouseToLC(li,col);
+        curLine=li;
+
+        if (clickCount>=3) {
+            // Triple-click: select whole line
+            selLine=li; selCol=0;
+            curCol=(int)code[li].size();
+            dragging=false;
+        } else if (clickCount==2) {
+            // Double-click: select word under cursor
+            auto isW=[](char c){return isalnum((unsigned char)c)||c=='_';};
+            int wl=col,wr=col;
+            while (wl>0&&isW(code[li][wl-1])) wl--;
+            while (wr<(int)code[li].size()&&isW(code[li][wr])) wr++;
+            curCol=wr; selLine=li; selCol=wl;
+            dragging=false;
+        } else {
+            // Single-click
+            curCol=col; selLine=li; selCol=col; dragging=true;
+        }
+        clamp();
     }
 }
 

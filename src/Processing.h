@@ -221,7 +221,6 @@ extern int   mouseButton;
 // the function pointer wiring in run().
 #if defined(__GNUC__) && !defined(_WIN32)
 // ── Linux / macOS: true weak symbols ──────────────────────────────────────
-// Unimplemented callbacks resolve to nullptr and are safely skipped in run().
 void keyPressed()          __attribute__((weak));
 void keyReleased()         __attribute__((weak));
 void keyTyped()            __attribute__((weak));
@@ -233,25 +232,55 @@ void mouseDragged()        __attribute__((weak));
 void mouseWheel(int delta) __attribute__((weak));
 void windowMoved()         __attribute__((weak));
 void windowResized()       __attribute__((weak));
-#else
-// ── Windows (MinGW): no weak symbol support ────────────────────────────────
-// Declare the callbacks as regular forward declarations.
-// - The IDE (IDE.cpp) defines all of them fully.
-// - User sketches define whichever ones they need.
-// - Any that are left undefined get a default empty body from
-//   src/Processing_defaults.cpp which is compiled into every binary.
-void keyPressed();
-void keyReleased();
-void keyTyped();
-void mousePressed();
-void mouseReleased();
-void mouseClicked();
-void mouseMoved();
-void mouseDragged();
-void mouseWheel(int delta);
-void windowMoved();
-void windowResized();
 #endif
+
+// ── Windows-compatible event wiring ───────────────────────────────────────
+// On Windows, weak symbols don't exist. Instead, IDE.cpp and user sketches
+// call registerCallbacks() to wire their implementations into Processing.
+// The _on* objects are std::function — safe to leave unset (they're falsy).
+#ifdef _WIN32
+#include <functional>
+// Exposed from Processing.cpp — set these to wire events on Windows
+extern std::function<void()>    _onKeyPressed;
+extern std::function<void()>    _onKeyReleased;
+extern std::function<void()>    _onKeyTyped;
+extern std::function<void()>    _onMousePressed;
+extern std::function<void()>    _onMouseReleased;
+extern std::function<void()>    _onMouseClicked;
+extern std::function<void()>    _onMouseMoved;
+extern std::function<void()>    _onMouseDragged;
+extern std::function<void(int)> _onMouseWheel;
+extern std::function<void()>    _onWindowMoved;
+extern std::function<void()>    _onWindowResized;
+
+// Call this from your sketch or IDE before run() to register all callbacks.
+// Only needed on Windows — on Linux/macOS weak symbols handle this automatically.
+inline void registerCallbacks(
+    std::function<void()>    kp  = nullptr,
+    std::function<void()>    kr  = nullptr,
+    std::function<void()>    kt  = nullptr,
+    std::function<void()>    mp  = nullptr,
+    std::function<void()>    mr  = nullptr,
+    std::function<void()>    mc  = nullptr,
+    std::function<void()>    mm  = nullptr,
+    std::function<void()>    md  = nullptr,
+    std::function<void(int)> mw  = nullptr,
+    std::function<void()>    wm  = nullptr,
+    std::function<void()>    wr  = nullptr)
+{
+    if (kp) _onKeyPressed    = kp;
+    if (kr) _onKeyReleased   = kr;
+    if (kt) _onKeyTyped      = kt;
+    if (mp) _onMousePressed  = mp;
+    if (mr) _onMouseReleased = mr;
+    if (mc) _onMouseClicked  = mc;
+    if (mm) _onMouseMoved    = mm;
+    if (md) _onMouseDragged  = md;
+    if (mw) _onMouseWheel    = mw;
+    if (wm) _onWindowMoved   = wm;
+    if (wr) _onWindowResized = wr;
+}
+#endif // _WIN32
 
 // =============================================================================
 // KEYBOARD

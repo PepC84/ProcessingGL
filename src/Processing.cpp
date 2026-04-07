@@ -1415,18 +1415,10 @@ void run(){
     if((void*)::Processing::windowMoved != nullptr) _onWindowMoved  = ::Processing::windowMoved;
     if((void*)::Processing::windowResized!=nullptr) _onWindowResized= ::Processing::windowResized;
 #else
-    // Windows: always wire (inline stubs are no-ops when sketch doesn't define them)
-    _onKeyPressed    = ::Processing::keyPressed;
-    _onKeyReleased   = ::Processing::keyReleased;
-    _onKeyTyped      = ::Processing::keyTyped;
-    _onMousePressed  = ::Processing::mousePressed;
-    _onMouseReleased = ::Processing::mouseReleased;
-    _onMouseClicked  = ::Processing::mouseClicked;
-    _onMouseMoved    = ::Processing::mouseMoved;
-    _onMouseDragged  = ::Processing::mouseDragged;
-    _onMouseWheel    = ::Processing::mouseWheel;
-    _onWindowMoved   = ::Processing::windowMoved;
-    _onWindowResized = ::Processing::windowResized;
+    // Windows: the _on* function objects are set by IDE.cpp (or the sketch)
+    // by calling Processing::registerCallbacks() before run() is invoked.
+    // Nothing to do here — if registerCallbacks() was not called, the
+    // std::function objects remain empty (falsy) and events are silently skipped.
 #endif
 
     redrawOnce=true;
