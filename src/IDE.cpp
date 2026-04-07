@@ -1226,25 +1226,6 @@ void setup() {
     populateTree();
     outLines.push_back("gcc-processing IDE ready.");
     outLines.push_back("Ctrl+B build | Ctrl+R run | Ctrl+. stop | Ctrl+Shift+M serial | Ctrl+Shift+L libs");
-
-#ifdef _WIN32
-    // Wire all event callbacks on Windows.
-    // Done here (not at static init) to guarantee _wireCallbacksFn is
-    // already constructed before we assign to it.
-    _wireCallbacksFn = [] {
-        _onKeyPressed    = keyPressed;
-        _onKeyReleased   = keyReleased;
-        _onKeyTyped      = keyTyped;
-        _onMousePressed  = mousePressed;
-        _onMouseReleased = mouseReleased;
-        _onMouseClicked  = mouseClicked;
-        _onMouseMoved    = mouseMoved;
-        _onMouseDragged  = mouseDragged;
-        _onMouseWheel    = mouseWheel;
-        _onWindowMoved   = windowMoved;
-        _onWindowResized = windowResized;
-    };
-#endif
 }
 
 void draw() {
@@ -1768,10 +1749,34 @@ void keyReleased()  {}
 void windowMoved()  {}
 void mouseClicked() {}
 void windowResized() {
-    // Refresh file tree when window is resized (e.g. after maximize)
     if (ftEntries.empty()) populateTree();
 }
 
-// (Windows wiring is done inside setup() -- see below)
+// =============================================================================
+// WINDOWS EVENT WIRING
+// All event functions are defined above. doWireCallbacks() assigns them to the
+// _on* function pointers that Processing::run() uses in the event loop.
+// _registerWire triggers this at startup via a global initializer -- after all
+// statics are ready but before run() is called.
+// =============================================================================
+
+#ifdef _WIN32
+static void doWireCallbacks() {
+    _onKeyPressed    = keyPressed;
+    _onKeyReleased   = keyReleased;
+    _onKeyTyped      = keyTyped;
+    _onMousePressed  = mousePressed;
+    _onMouseReleased = mouseReleased;
+    _onMouseClicked  = mouseClicked;
+    _onMouseMoved    = mouseMoved;
+    _onMouseDragged  = mouseDragged;
+    _onMouseWheel    = mouseWheel;
+    _onWindowMoved   = windowMoved;
+    _onWindowResized = windowResized;
+}
+// Assign the function pointer before main(). Storing a pointer (not calling
+// anything) is safe even at static init time.
+static int _registerWire = ([]{ _wireCallbacksFn = doWireCallbacks; return 0; })();
+#endif
 
 } // namespace Processing

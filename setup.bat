@@ -68,7 +68,12 @@ set "PATH=!MINGW_BIN!;!MSYS2!\usr\bin;%PATH%"
 :: ---------------------------------------------------------------------------
 echo.
 echo [INFO] Updating package database...
-"!BASH!" -lc "pacman -Sy --noconfirm 2>&1 | tail -3"
+:: Remove stale lock file if present (safe when no other pacman is running)
+if exist "!MSYS2!ar\lib\pacman\db.lck" (
+    echo [INFO] Removing stale pacman lock...
+    del /f /q "!MSYS2!ar\lib\pacman\db.lck" 2>nul
+)
+"!BASH!" -lc "pacman -Sy --noconfirm 2>&1 | tail -5"
 
 echo [INFO] Installing build tools and GL libraries...
 "!BASH!" -lc "pacman -S --needed --noconfirm mingw-w64-x86_64-gcc mingw-w64-x86_64-glfw mingw-w64-x86_64-glew mingw-w64-x86_64-freeglut mingw-w64-x86_64-make mingw-w64-x86_64-pkg-config 2>&1 | grep -v warning"
