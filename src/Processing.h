@@ -249,8 +249,11 @@ extern std::function<void()>    _onWindowMoved;
 extern std::function<void()>    _onWindowResized;
 
 // -- Windows event wiring ----------------------------------------------------
+// On Windows, IDE.cpp automatically sets _wireCallbacksFn (a std::function)
+// before run() is called. The function pointer wires all _on* callbacks.
+// User sketches don't need to do anything -- it's handled automatically.
 #ifdef _WIN32
-void wireCallbacks();  // defined at bottom of IDE.cpp/sketch, called by run()
+extern std::function<void()> _wireCallbacksFn;
 #endif
 
 // =============================================================================

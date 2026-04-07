@@ -81,6 +81,11 @@ std::function<void(int)> _onMouseWheel;
 std::function<void()>    _onWindowMoved;
 std::function<void()>    _onWindowResized;
 
+// On Windows: IDE.cpp sets this to its wireCallbacks() before calling run().
+// Processing.cpp calls it during run() instead of calling wireCallbacks() directly.
+// This avoids any linker dependency on a symbol defined outside Processing.cpp.
+std::function<void()>    _wireCallbacksFn;
+
 static GLFWwindow* gWindow=nullptr;
 static bool is3DMode=false;
 static int   sphereRes=24;
@@ -1448,10 +1453,9 @@ void run(){
     if((void*)::Processing::windowMoved  != nullptr) _onWindowMoved  = ::Processing::windowMoved;
     if((void*)::Processing::windowResized!= nullptr) _onWindowResized= ::Processing::windowResized;
 #else
-    // Windows: wireCallbacks() is defined at the bottom of IDE.cpp (or sketch)
-    // after all event functions are fully defined. Calling it here guarantees
-    // the std::function objects are set before the event loop starts.
-    ::Processing::wireCallbacks();
+    // Windows: call the wire function if the IDE/sketch registered one.
+    // IDE.cpp sets _wireCallbacksFn = wireCallbacks before calling run().
+    if (_wireCallbacksFn) _wireCallbacksFn();
 #endif
 
     redrawOnce=true;

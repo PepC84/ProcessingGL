@@ -1749,24 +1749,29 @@ void windowResized() {
     if (ftEntries.empty()) populateTree();
 }
 
-// wireCallbacks() -- called by Processing::run() on Windows.
-// Defined here so all event functions are already in scope.
-// Processing_defaults.cpp provides a no-op stub for user sketches that
-// don't define their own callbacks.
+// On Windows: set _wireCallbacksFn so Processing::run() can wire events.
+// This struct's constructor runs at static init time, after all functions
+// in this file are defined, so the lambdas can safely capture them.
+// No exported symbol needed -- zero linker dependency.
 #ifdef _WIN32
-void wireCallbacks() {
-    _onKeyPressed    = keyPressed;
-    _onKeyReleased   = keyReleased;
-    _onKeyTyped      = keyTyped;
-    _onMousePressed  = mousePressed;
-    _onMouseReleased = mouseReleased;
-    _onMouseClicked  = mouseClicked;
-    _onMouseMoved    = mouseMoved;
-    _onMouseDragged  = mouseDragged;
-    _onMouseWheel    = mouseWheel;
-    _onWindowMoved   = windowMoved;
-    _onWindowResized = windowResized;
-}
+struct _WireSetup {
+    _WireSetup() {
+        _wireCallbacksFn = [] {
+            _onKeyPressed    = keyPressed;
+            _onKeyReleased   = keyReleased;
+            _onKeyTyped      = keyTyped;
+            _onMousePressed  = mousePressed;
+            _onMouseReleased = mouseReleased;
+            _onMouseClicked  = mouseClicked;
+            _onMouseMoved    = mouseMoved;
+            _onMouseDragged  = mouseDragged;
+            _onMouseWheel    = mouseWheel;
+            _onWindowMoved   = windowMoved;
+            _onWindowResized = windowResized;
+        };
+    }
+};
+static _WireSetup _wireSetup;
 #endif
 
 } // namespace Processing
