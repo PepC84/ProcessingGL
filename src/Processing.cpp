@@ -1434,26 +1434,24 @@ void run(){
     setup();
 
     // Auto-wire Java-style event callbacks.
-    // On Linux/macOS: weak symbol nullptr check skips unimplemented callbacks.
-    // On Windows: inline stubs are always non-null, so we always wire them —
-    //             the inline empty body is harmless when the sketch doesn't define them.
 #if defined(__GNUC__) && !defined(_WIN32)
-    if((void*)::Processing::keyPressed  != nullptr) _onKeyPressed   = ::Processing::keyPressed;
-    if((void*)::Processing::keyReleased != nullptr) _onKeyReleased  = ::Processing::keyReleased;
-    if((void*)::Processing::keyTyped    != nullptr) _onKeyTyped     = ::Processing::keyTyped;
-    if((void*)::Processing::mousePressed!= nullptr) _onMousePressed = ::Processing::mousePressed;
-    if((void*)::Processing::mouseReleased!=nullptr) _onMouseReleased= ::Processing::mouseReleased;
-    if((void*)::Processing::mouseClicked!= nullptr) _onMouseClicked = ::Processing::mouseClicked;
-    if((void*)::Processing::mouseMoved  != nullptr) _onMouseMoved   = ::Processing::mouseMoved;
-    if((void*)::Processing::mouseDragged!= nullptr) _onMouseDragged = ::Processing::mouseDragged;
-    if((void*)::Processing::mouseWheel  != nullptr) _onMouseWheel   = ::Processing::mouseWheel;
-    if((void*)::Processing::windowMoved != nullptr) _onWindowMoved  = ::Processing::windowMoved;
-    if((void*)::Processing::windowResized!=nullptr) _onWindowResized= ::Processing::windowResized;
+    // Linux/macOS: weak symbol nullptr check skips unimplemented callbacks.
+    if((void*)::Processing::keyPressed   != nullptr) _onKeyPressed   = ::Processing::keyPressed;
+    if((void*)::Processing::keyReleased  != nullptr) _onKeyReleased  = ::Processing::keyReleased;
+    if((void*)::Processing::keyTyped     != nullptr) _onKeyTyped     = ::Processing::keyTyped;
+    if((void*)::Processing::mousePressed != nullptr) _onMousePressed = ::Processing::mousePressed;
+    if((void*)::Processing::mouseReleased!= nullptr) _onMouseReleased= ::Processing::mouseReleased;
+    if((void*)::Processing::mouseClicked != nullptr) _onMouseClicked = ::Processing::mouseClicked;
+    if((void*)::Processing::mouseMoved   != nullptr) _onMouseMoved   = ::Processing::mouseMoved;
+    if((void*)::Processing::mouseDragged != nullptr) _onMouseDragged = ::Processing::mouseDragged;
+    if((void*)::Processing::mouseWheel   != nullptr) _onMouseWheel   = ::Processing::mouseWheel;
+    if((void*)::Processing::windowMoved  != nullptr) _onWindowMoved  = ::Processing::windowMoved;
+    if((void*)::Processing::windowResized!= nullptr) _onWindowResized= ::Processing::windowResized;
 #else
-    // Windows: the _on* function objects are set by IDE.cpp (or the sketch)
-    // by calling Processing::registerCallbacks() before run() is invoked.
-    // Nothing to do here — if registerCallbacks() was not called, the
-    // std::function objects remain empty (falsy) and events are silently skipped.
+    // Windows: wireCallbacks() is defined at the bottom of IDE.cpp (or sketch)
+    // after all event functions are fully defined. Calling it here guarantees
+    // the std::function objects are set before the event loop starts.
+    ::Processing::wireCallbacks();
 #endif
 
     redrawOnce=true;

@@ -1478,27 +1478,22 @@ void windowMoved(){}
 void mouseClicked(){}
 void windowResized(){ if (ftEntries.empty()) populateTree(); }
 
-// Wire Windows event callbacks after all functions are defined
-// On Linux/macOS this is handled by __attribute__((weak)) in Processing.h
+// wireCallbacks() -- called by Processing::run() on Windows after setup().
+// All event functions are defined above so the compiler can resolve them.
 #ifdef _WIN32
-struct WinCallbackRegistrar {
-    WinCallbackRegistrar() {
-        registerCallbacks(
-            keyPressed,
-            keyReleased,
-            keyTyped,
-            mousePressed,
-            mouseReleased,
-            mouseClicked,
-            mouseMoved,
-            mouseDragged,
-            mouseWheel,
-            windowMoved,
-            windowResized
-        );
-    }
-};
-static WinCallbackRegistrar _autoRegister;
+void wireCallbacks() {
+    _onKeyPressed    = keyPressed;
+    _onKeyReleased   = keyReleased;
+    _onKeyTyped      = keyTyped;
+    _onMousePressed  = mousePressed;
+    _onMouseReleased = mouseReleased;
+    _onMouseClicked  = mouseClicked;
+    _onMouseMoved    = mouseMoved;
+    _onMouseDragged  = mouseDragged;
+    _onMouseWheel    = mouseWheel;
+    _onWindowMoved   = windowMoved;
+    _onWindowResized = windowResized;
+}
 #endif
 
 } // namespace Processing
