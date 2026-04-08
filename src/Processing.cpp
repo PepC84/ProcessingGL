@@ -81,10 +81,10 @@ std::function<void(int)> _onMouseWheel;
 std::function<void()>    _onWindowMoved;
 std::function<void()>    _onWindowResized;
 
-// On Windows: IDE.cpp sets this to its wireCallbacks() before calling run().
-// Processing.cpp calls it during run() instead of calling wireCallbacks() directly.
-// This avoids any linker dependency on a symbol defined outside Processing.cpp.
-std::function<void()>    _wireCallbacksFn;
+// On Windows: IDE.cpp stores a raw function pointer here before static init
+// of Processing.cpp completes. Raw function pointers are POD -- zero-initialized
+// at program start before ANY constructor runs, so this is always safe to write.
+void (*_wireCallbacksFn)() = nullptr;
 
 static GLFWwindow* gWindow=nullptr;
 static bool is3DMode=false;

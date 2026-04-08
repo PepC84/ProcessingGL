@@ -249,11 +249,11 @@ extern std::function<void()>    _onWindowMoved;
 extern std::function<void()>    _onWindowResized;
 
 // -- Windows event wiring ----------------------------------------------------
-// On Windows, IDE.cpp automatically sets _wireCallbacksFn (a std::function)
-// before run() is called. The function pointer wires all _on* callbacks.
-// User sketches don't need to do anything -- it's handled automatically.
+// On Windows, IDE.cpp sets this raw function pointer during static init.
+// Raw function pointers are POD -- zero at program start, safe to write
+// from any static initializer regardless of init order.
 #ifdef _WIN32
-extern std::function<void()> _wireCallbacksFn;
+extern void (*_wireCallbacksFn)();
 #endif
 
 // =============================================================================
