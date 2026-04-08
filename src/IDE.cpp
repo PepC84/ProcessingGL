@@ -725,7 +725,7 @@ static void doCompile() {
         " src/Sketch_run.cpp"
         " src/Processing_defaults.cpp"
         " src/main.cpp"
-        " -o "" + outBin + """ +
+        " -o \"" + outBin + "\"" +
         " " + buildFlags +
         " 2>&1";
 
