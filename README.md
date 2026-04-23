@@ -1,4 +1,4 @@
-# gcc-processing
+# ProcessingGL
 
 **A Processing-style creative coding framework & IDE — written in C++ with OpenGL**
 
@@ -11,7 +11,7 @@
 
 ## What is this?
 
-`gcc-processing` brings the simplicity of [Processing](https://processing.org/) to native C++.
+`ProcessingGL` brings the simplicity of [Processing](https://processing.org/) to native C++.
 Write `setup()` and `draw()` functions and get a real-time OpenGL window — no boilerplate, no engine overhead.
 It ships with a built-in **live-coding IDE** so you can edit and run sketches without leaving the app.
 
@@ -103,7 +103,7 @@ void draw() {
 ## Project Structure
 
 ```
-gcc-processing/
+ProcessingGL/
 ├── src/
 │   ├── Processing.h        # API header — include this in your sketch
 │   ├── Processing.cpp      # Framework implementation
