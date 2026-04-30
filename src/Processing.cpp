@@ -46,7 +46,7 @@ bool  isResizable=false,focused=false;
 float mouseX=0,mouseY=0,pmouseX=0,pmouseY=0;
 bool  isMousePressed=false;
 int   mouseButton=-1;
-bool isKeyPressed=false;
+bool  isKeyPressed=false;
 int   keyCode=0;
 char  key=0;
 
@@ -61,7 +61,7 @@ float fillR=1,fillG=1,fillB=1,fillA=1;
 float strokeR=0,strokeG=0,strokeB=0,strokeA=1;
 float strokeW=1;
 bool  doFill=true,doStroke=true,smoothing=true;
-int   currentRectMode=CORNER,currentEllipseMode=CENTER_MODE,currentImageMode=CORNER;
+int   currentRectMode=CORNER,currentEllipseMode=CENTER,currentImageMode=CORNER;
 float tintR=1,tintG=1,tintB=1,tintA=1;
 bool  doTint=false;
 int   colorModeVal=RGB;
@@ -259,12 +259,9 @@ static void restoreLighting() {
 }
 
 static void setProjection(int,int){
-    // Always query the actual framebuffer size from GLFW so the
-    // viewport covers the full window on every platform/DPI setting.
-    // The ortho uses logical winWidth/winHeight so sketch coords are correct.
-    int fw = winWidth, fh = winHeight;
-    if(gWindow) glfwGetFramebufferSize(gWindow, &fw, &fh);
-    glViewport(0, 0, fw, fh);
+    // Use logical window size for both viewport and ortho so sketch
+    // pixel coordinates map 1:1 across all DPI settings.
+    glViewport(0, 0, winWidth, winHeight);
     glMatrixMode(GL_PROJECTION);glLoadIdentity();
     glOrtho(0, winWidth, winHeight, 0, -1, 1);
     glMatrixMode(GL_MODELVIEW);glLoadIdentity();
@@ -310,14 +307,14 @@ static void drawEllipseGeom(float cx,float cy,float rx,float ry,
 }
 
 static void resolveRect(float& x,float& y,float& w,float& h){
-    if(currentRectMode==CENTER_MODE){x-=w*0.5f;y-=h*0.5f;}
+    if(currentRectMode==CENTER){x-=w*0.5f;y-=h*0.5f;}
     else if(currentRectMode==RADIUS){x-=w;y-=h;w*=2;h*=2;}
     else if(currentRectMode==CORNERS){w=w-x;h=h-y;}
 }
 static void resolveEllipse(float& cx,float& cy,float& rx,float& ry){
     if(currentEllipseMode==CORNER){cx+=rx;cy+=ry;}
     else if(currentEllipseMode==CORNERS){float ex=rx,ey=ry;rx=(ex-cx)*0.5f;ry=(ey-cy)*0.5f;cx=(cx+ex)*0.5f;cy=(cy+ey)*0.5f;}
-    else if(currentEllipseMode==CENTER_MODE){rx*=0.5f;ry*=0.5f;}
+    else if(currentEllipseMode==CENTER){rx*=0.5f;ry*=0.5f;}
 }
 static void setFillFromColor(color c){unsigned int v=c.value;fillR=(v>>16&0xFF)/255.f;fillG=(v>>8&0xFF)/255.f;fillB=(v&0xFF)/255.f;fillA=(v>>24&0xFF)/255.f;doFill=true;}
 static void setStrokeFromColor(color c){unsigned int v=c.value;strokeR=(v>>16&0xFF)/255.f;strokeG=(v>>8&0xFF)/255.f;strokeB=(v&0xFF)/255.f;strokeA=(v>>24&0xFF)/255.f;doStroke=true;}
@@ -328,13 +325,39 @@ static void setStrokeFromColor(color c){unsigned int v=c.value;strokeR=(v>>16&0x
 
 static bool defaultP3D = false;
 
+static bool _sizeOnlyMode = false; // true during pre-pass to capture size()
+
 void size(int w,int h){
     winWidth=w;winHeight=h;
     pixelWidth=w;pixelHeight=h;
+    if(_sizeOnlyMode) return; // pre-pass: just capture dimensions
     if(gWindow){
         glfwSetWindowSize(gWindow,w,h);
-        glfwPollEvents();
+        // Poll until the framebuffer is actually the requested size.
+        // glfwSetWindowSize is async; without this the window stays 100x100
+        // when setup() calls background() or draws anything.
+        for(int _wait=0; _wait<200; _wait++){
+            glfwPollEvents();
+            int fw=0,fh=0;
+            glfwGetFramebufferSize(gWindow,&fw,&fh);
+            if(fw==w && fh==h){ pixelWidth=fw; pixelHeight=fh; break; }
+            if(_wait>10){
+                // On HiDPI fw/fh may be scaled -- accept if close enough
+                if(fw>0&&fh>0){ pixelWidth=fw; pixelHeight=fh; break; }
+            }
+            // Sleep 1ms between polls
+            #ifdef _WIN32
+            Sleep(1);
+            #else
+            usleep(1000);
+            #endif
+        }
         setProjection(w,h);
+        // Clear both front and back buffers at the new size
+        glClearColor(0,0,0,1);
+        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+        glfwSwapBuffers(gWindow);
+        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     }
 }
 void size(int w,int h,int renderer){
@@ -352,6 +375,62 @@ void windowTitle(const std::string& t){if(gWindow)glfwSetWindowTitle(gWindow,t.c
 void windowMove(int x,int y){if(gWindow)glfwSetWindowPos(gWindow,x,y);}
 void windowResize(int w,int h){size(w,h);}
 void windowResizable(bool r){isResizable=r;if(gWindow)glfwSetWindowAttrib(gWindow,GLFW_RESIZABLE,r?GLFW_TRUE:GLFW_FALSE);}
+// ---------------------------------------------------------------------------
+// Clipboard
+// ---------------------------------------------------------------------------
+void setClipboard(const std::string& s) {
+    if (s.empty()) return;
+    // Use native OS clipboard API (works without window focus, no GLFW quirks)
+    plat_set_clipboard(s);
+    // Also set via GLFW so getClipboard() can retrieve it cross-platform
+    if (gWindow) glfwSetClipboardString(gWindow, s.c_str());
+}
+std::string getClipboard() {
+    if (!gWindow) return "";
+    const char* cb = glfwGetClipboardString(gWindow);
+    return cb ? std::string(cb) : "";
+}
+
+// ---------------------------------------------------------------------------
+// Window icon
+// ---------------------------------------------------------------------------
+void setWindowIcon(PImage* img) {
+    if (!img || !gWindow) return;
+    // Convert ARGB pixels (Processing internal) to RGBA (GLFW wants RGBA)
+    std::vector<unsigned char> rgba(img->width * img->height * 4);
+    for (int p = 0; p < img->width * img->height; p++) {
+        unsigned int px = img->pixels[p];
+        rgba[p*4+0] = (px >> 16) & 0xFF;  // R
+        rgba[p*4+1] = (px >>  8) & 0xFF;  // G
+        rgba[p*4+2] = (px      ) & 0xFF;  // B
+        rgba[p*4+3] = (px >> 24) & 0xFF;  // A
+    }
+    GLFWimage gi;
+    gi.width  = img->width;
+    gi.height = img->height;
+    gi.pixels = rgba.data();
+    glfwSetWindowIcon(gWindow, 1, &gi);
+}
+
+// ---------------------------------------------------------------------------
+// Modifier key state
+// ---------------------------------------------------------------------------
+bool isCtrlDown() {
+    if (!gWindow) return false;
+    return glfwGetKey(gWindow, GLFW_KEY_LEFT_CONTROL)  == GLFW_PRESS
+        || glfwGetKey(gWindow, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+}
+bool isShiftDown() {
+    if (!gWindow) return false;
+    return glfwGetKey(gWindow, GLFW_KEY_LEFT_SHIFT)  == GLFW_PRESS
+        || glfwGetKey(gWindow, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+}
+bool isAltDown() {
+    if (!gWindow) return false;
+    return glfwGetKey(gWindow, GLFW_KEY_LEFT_ALT)  == GLFW_PRESS
+        || glfwGetKey(gWindow, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+}
+
 void windowRatio(int w,int h){if(gWindow)glfwSetWindowAspectRatio(gWindow,w,h);}
 void pixelDensity(int d){pixelDensityValue=d;}
 void smooth()  {smoothing=true; glEnable(GL_LINE_SMOOTH);glHint(GL_LINE_SMOOTH_HINT,GL_NICEST);glEnable(GL_MULTISAMPLE);}
@@ -386,7 +465,12 @@ void popMatrix() {glPopMatrix();}
 // BACKGROUND / CLEAR
 // =============================================================================
 
-static void setBg(float r,float g,float b,float a){glClearColor(r,g,b,a);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);}
+static float bgR=0,bgG=0,bgB=0,bgA=1; // last background() color
+static void setBg(float r,float g,float b,float a){
+    bgR=r;bgG=g;bgB=b;bgA=a;
+    glClearColor(r,g,b,a);
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+}
 void background(float gray,float a)           {color c=makeColor(gray,a);unsigned int v=c.value;setBg((v>>16&0xFF)/255.f,(v>>8&0xFF)/255.f,(v&0xFF)/255.f,(v>>24&0xFF)/255.f);}
 void background(float r,float g,float b,float a){color c=makeColor(r,g,b,a);unsigned int v=c.value;setBg((v>>16&0xFF)/255.f,(v>>8&0xFF)/255.f,(v&0xFF)/255.f,(v>>24&0xFF)/255.f);}
 void background(color c)                      {unsigned int v=c.value;setBg((v>>16&0xFF)/255.f,(v>>8&0xFF)/255.f,(v&0xFF)/255.f,(v>>24&0xFF)/255.f);}
@@ -863,18 +947,19 @@ void ortho() {
 }
 
 void ortho(float l, float r, float b, float t, float n, float f) {
-    // Processing Java passes ortho(-w/2, w/2, -h/2, h/2, near, far).
-    // The modelview camera (gluLookAt Y-up view space) already maps:
-    //   view +Y = up on screen (= decreasing screen Y in Processing coords)
-    //   view -Y = down on screen (= increasing screen Y in Processing coords)
-    // glOrtho(l, r, bottom, top) maps bottom->screen-bottom, top->screen-top.
-    // Passing b=-h/2 as bottom and t=h/2 as top is correct as-is:
-    //   b=-h/2 maps to screen bottom (Y = height in screen pixels)
-    //   t=+h/2 maps to screen top    (Y = 0 in screen pixels)
-    // No swap, no Y-scale needed -- the gluLookAt already handles the convention.
+    // Processing Java ortho() uses the SAME standard modelview as perspective()
+    // (eye at eyeZ above canvas center, looking at canvas center).
+    // Only the projection changes: orthographic instead of frustum.
+    // The Y-flip (glScalef 1,-1,1) is applied in projection space so that
+    // Processing's Y-down screen coordinate convention is preserved.
+    //
+    // With the standard camera, world point (w/2, h/2, 0) is at screen center.
+    // ortho(-w/2, w/2, -h/2, h/2) covers that range around the camera target.
+    // So translate(w/2, h/2) correctly lands at the center of the screen.
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
-    glOrtho(l, r, b, t, n, f);
-    applyStandardModelview();
+    glScalef(1, -1, 1);          // Y-flip: Processing Y-down convention
+    glOrtho(l, r, b, t, n, f);  // standard order: left,right,bottom,top,near,far
+    applyStandardModelview();    // same camera as perspective()
 }
 
 void frustum(float l, float r, float b, float t, float n, float f) {
@@ -1434,7 +1519,7 @@ static void cursor_pos_cb(GLFWwindow*,double x,double y){
 }
 static void mouse_btn_cb(GLFWwindow*,int btn,int action,int){
     if(action==GLFW_PRESS){
-        isMousePressed=true;mouseButton=(btn==GLFW_MOUSE_BUTTON_LEFT)?LEFT:(btn==GLFW_MOUSE_BUTTON_RIGHT)?RIGHT:CENTER;
+        isMousePressed=true;mouseButton=(btn==GLFW_MOUSE_BUTTON_LEFT)?LEFT:(btn==GLFW_MOUSE_BUTTON_RIGHT)?RIGHT:CENTER; // LEFT=37,RIGHT=39,CENTER=3
         if(_onMousePressed)_onMousePressed();
         mouseWasPressed=true;
     } else if(action==GLFW_RELEASE){
@@ -1460,36 +1545,92 @@ static void char_cb(GLFWwindow*, unsigned int codepoint) {
     if (_onKeyTyped) _onKeyTyped();
 }
 
+// Translate GLFW key code to Java KeyEvent.VK_* value.
+// The Processing reference says keyCode matches Java's KeyEvent constants.
+static int glfw_to_java_keycode(int k) {
+    switch (k) {
+        // Arrow / navigation
+        case GLFW_KEY_UP:        return 38;
+        case GLFW_KEY_DOWN:      return 40;
+        case GLFW_KEY_LEFT:      return 37;
+        case GLFW_KEY_RIGHT:     return 39;
+        case GLFW_KEY_HOME:      return 36;
+        case GLFW_KEY_END:       return 35;
+        case GLFW_KEY_PAGE_UP:   return 33;
+        case GLFW_KEY_PAGE_DOWN: return 34;
+        // Modifiers
+        case GLFW_KEY_LEFT_SHIFT:
+        case GLFW_KEY_RIGHT_SHIFT:   return 16;
+        case GLFW_KEY_LEFT_CONTROL:
+        case GLFW_KEY_RIGHT_CONTROL: return 17;
+        case GLFW_KEY_LEFT_ALT:
+        case GLFW_KEY_RIGHT_ALT:     return 18;
+        case GLFW_KEY_LEFT_SUPER:
+        case GLFW_KEY_RIGHT_SUPER:   return 157;  // VK_META
+        // ASCII control (key is set directly, not CODED, but keyCode is still set)
+        case GLFW_KEY_BACKSPACE: return 8;
+        case GLFW_KEY_TAB:       return 9;
+        case GLFW_KEY_ENTER:
+        case GLFW_KEY_KP_ENTER:  return 10;       // ENTER (also fires RETURN=13 via key)
+        case GLFW_KEY_ESCAPE:    return 27;
+        case GLFW_KEY_DELETE:    return 127;
+        case GLFW_KEY_INSERT:    return 155;
+        // Function keys
+        case GLFW_KEY_F1:  return 112; case GLFW_KEY_F2:  return 113;
+        case GLFW_KEY_F3:  return 114; case GLFW_KEY_F4:  return 115;
+        case GLFW_KEY_F5:  return 116; case GLFW_KEY_F6:  return 117;
+        case GLFW_KEY_F7:  return 118; case GLFW_KEY_F8:  return 119;
+        case GLFW_KEY_F9:  return 120; case GLFW_KEY_F10: return 121;
+        case GLFW_KEY_F11: return 122; case GLFW_KEY_F12: return 123;
+        // Letter keys: GLFW A=65..Z=90 matches Java VK_A=65..VK_Z=90
+        // (GLFW uses uppercase, Java uses uppercase -- same values)
+        default:
+            if (k >= GLFW_KEY_A && k <= GLFW_KEY_Z) return k;  // 65..90 match
+            if (k >= GLFW_KEY_0 && k <= GLFW_KEY_9) return k - GLFW_KEY_0 + 48; // 48..57
+            return k; // best effort for anything else
+    }
+}
+
 static void key_cb(GLFWwindow* w, int k, int /*scancode*/, int action, int /*mods*/) {
     if (action == GLFW_PRESS || action == GLFW_REPEAT) {
         isKeyPressed = true;
-        keyCode = k;
 
-        // For printable keys, char_cb fires right after key_cb and will set
-        // key correctly (with shift/caps applied). For REPEAT events char_cb
-        // also fires. For non-printable keys we set key=CODED.
-        // Reset g_lastChar so we can detect whether char_cb fired.
-        if (k == GLFW_KEY_ENTER || k == GLFW_KEY_KP_ENTER ||
-            k == GLFW_KEY_BACKSPACE || k == GLFW_KEY_DELETE ||
-            k == GLFW_KEY_TAB || k == GLFW_KEY_ESCAPE ||
-            k == GLFW_KEY_UP || k == GLFW_KEY_DOWN ||
-            k == GLFW_KEY_LEFT || k == GLFW_KEY_RIGHT ||
-            k == GLFW_KEY_HOME || k == GLFW_KEY_END ||
-            k == GLFW_KEY_PAGE_UP || k == GLFW_KEY_PAGE_DOWN ||
-            k == GLFW_KEY_F1 || k == GLFW_KEY_F2 || k == GLFW_KEY_F3 ||
-            k == GLFW_KEY_F4 || k == GLFW_KEY_F5 || k == GLFW_KEY_F6 ||
-            k == GLFW_KEY_F7 || k == GLFW_KEY_F8 || k == GLFW_KEY_F9 ||
-            k == GLFW_KEY_F10|| k == GLFW_KEY_F11|| k == GLFW_KEY_F12||
-            k == GLFW_KEY_LEFT_SHIFT || k == GLFW_KEY_RIGHT_SHIFT ||
-            k == GLFW_KEY_LEFT_CONTROL || k == GLFW_KEY_RIGHT_CONTROL ||
-            k == GLFW_KEY_LEFT_ALT || k == GLFW_KEY_RIGHT_ALT ||
-            k == GLFW_KEY_LEFT_SUPER || k == GLFW_KEY_RIGHT_SUPER ||
-            k == GLFW_KEY_CAPS_LOCK || k == GLFW_KEY_NUM_LOCK) {
-            key = (char)CODED;
+        // Translate GLFW code -> Java KeyEvent.VK_* value (Processing reference standard)
+        keyCode = glfw_to_java_keycode(k);
+
+        // Set key=CODED for all non-printable/special keys.
+        // ASCII keys that Processing handles via key directly (not CODED):
+        //   BACKSPACE(8), TAB(9), ENTER(10), ESC(27), DELETE(127)
+        // Everything else that has no ASCII representation gets CODED.
+        switch (k) {
+            case GLFW_KEY_BACKSPACE: key = (char)8;   break;
+            case GLFW_KEY_TAB:       key = (char)9;   break;
+            case GLFW_KEY_ENTER:
+            case GLFW_KEY_KP_ENTER:  key = (char)10;  break;
+            case GLFW_KEY_ESCAPE:    key = (char)27;  break;
+            case GLFW_KEY_DELETE:    key = (char)127; break;
+            // All other special keys set key=CODED
+            case GLFW_KEY_UP: case GLFW_KEY_DOWN:
+            case GLFW_KEY_LEFT: case GLFW_KEY_RIGHT:
+            case GLFW_KEY_HOME: case GLFW_KEY_END:
+            case GLFW_KEY_PAGE_UP: case GLFW_KEY_PAGE_DOWN:
+            case GLFW_KEY_LEFT_SHIFT: case GLFW_KEY_RIGHT_SHIFT:
+            case GLFW_KEY_LEFT_CONTROL: case GLFW_KEY_RIGHT_CONTROL:
+            case GLFW_KEY_LEFT_ALT: case GLFW_KEY_RIGHT_ALT:
+            case GLFW_KEY_LEFT_SUPER: case GLFW_KEY_RIGHT_SUPER:
+            case GLFW_KEY_INSERT: case GLFW_KEY_CAPS_LOCK:
+            case GLFW_KEY_F1: case GLFW_KEY_F2: case GLFW_KEY_F3:
+            case GLFW_KEY_F4: case GLFW_KEY_F5: case GLFW_KEY_F6:
+            case GLFW_KEY_F7: case GLFW_KEY_F8: case GLFW_KEY_F9:
+            case GLFW_KEY_F10: case GLFW_KEY_F11: case GLFW_KEY_F12:
+                key = (char)CODED;
+                break;
+            default:
+                // Printable key: char_cb will fire next and set key correctly
+                // (with shift/caps/layout applied). Don't overwrite key here.
+                break;
         }
-        // For printable keys key will be set correctly by char_cb which fires next.
 
-        // ESC is handled by the sketch -- do not force-close here
         if (_onKeyPressed) _onKeyPressed();
 
     } else if (action == GLFW_RELEASE) {
@@ -1552,12 +1693,19 @@ void run(){
     strokeR=0;strokeG=0;strokeB=0;strokeA=1;strokeW=1;
     colorModeVal=RGB;
     colorMaxH=255;colorMaxS=255;colorMaxB=255;colorMaxA=255;
-    currentRectMode=CORNER;currentEllipseMode=CENTER_MODE;currentImageMode=CORNER;
+    currentRectMode=CORNER;currentEllipseMode=CENTER;currentImageMode=CORNER;
     doTint=false;tintR=1;tintG=1;tintB=1;tintA=1;
     lightsEnabled=false;lightIndex=0;
     looping=true;
 
     settings();
+
+    // Pre-pass: call setup() with sizeOnly mode so size() stores dimensions
+    // without needing a GL context. This lets the window be created at the
+    // correct size immediately, avoiding the 100x100 -> resize -> stale-framebuffer bug.
+    _sizeOnlyMode = true;
+    setup();
+    _sizeOnlyMode = false;
 
     glfwWindowHint(GLFW_RESIZABLE,isResizable?GLFW_TRUE:GLFW_FALSE);
     glfwWindowHint(GLFW_SAMPLES,4);
@@ -1642,13 +1790,14 @@ void run(){
 
             if(defaultP3D){
                 // Set up viewport
-                {int fw=winWidth,fh=winHeight;if(gWindow)glfwGetFramebufferSize(gWindow,&fw,&fh);glViewport(0,0,fw,fh);}
+                glViewport(0,0,winWidth,winHeight);
                 glEnable(GL_DEPTH_TEST);
                 glDepthFunc(GL_LESS);
                 glDisable(GL_CULL_FACE);
                 glFrontFace(GL_CW);
                 glEnable(GL_NORMALIZE);
-                glClear(GL_DEPTH_BUFFER_BIT);
+                glClearColor(bgR, bgG, bgB, bgA);
+                glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
                 // Auto-apply the default Processing camera BEFORE draw() --
                 // matches Java Processing behaviour exactly. The sketch can
                 // override by calling camera() / perspective() itself.
@@ -1656,11 +1805,19 @@ void run(){
                 // see the camera matrix and lock correctly in eye space.
                 applyDefaultCamera();
             } else {
-                // 2D mode: disable depth test so all shapes draw in order
+                // 2D mode: reset viewport and projection every frame.
+                // Use actual framebuffer size for viewport (handles HiDPI/Retina
+                // where framebuffer may be 2x logical size) but logical
+                // winWidth/winHeight for the ortho matrix so sketch pixel
+                // coordinates map 1:1 regardless of DPI scaling.
+                glViewport(0, 0, winWidth, winHeight);
+                glMatrixMode(GL_PROJECTION); glLoadIdentity();
+                glOrtho(0, winWidth, winHeight, 0, -1, 1);
+                glMatrixMode(GL_MODELVIEW); glLoadIdentity();
                 glDisable(GL_DEPTH_TEST);
                 glDisable(GL_LIGHTING);
-                setProjection(winWidth,winHeight);
-                glClear(GL_DEPTH_BUFFER_BIT);
+                glClearColor(bgR, bgG, bgB, bgA);
+                glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
             }
 
             // Reset all light slots each frame so lights from the previous

@@ -10,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <set>
 #include <cstdio>
 #include <thread>
 #include <mutex>
@@ -155,6 +156,7 @@ static void populateTree() {
 
 static std::vector<std::string> code = {
     "// run once",
+    "",
     "void setup() {",
     "  size(640, 360);",
     "}",
@@ -254,23 +256,10 @@ static void pushUndo() {
 }
 
 // =============================================================================
-// VIM MODE
-// =============================================================================
-
-static bool vimMode   = false;
-static bool vimInsert = false;
-
-enum class VimState { NORMAL, INSERT, VISUAL, VISUAL_LINE };
-static VimState vimState        = VimState::NORMAL;
-static int      vimAnchorLine   = 0;
-static int      vimAnchorCol    = 0;
-static std::string vimCmd       = "";
 
 // -- Vim tab panels --------------------------------------------------------
 // The "Vim" tab in the console area shows two sub-panels:
 //   "Help"   -- a read-only cheat sheet of every supported vim operation
-static bool     showVimTab      = false;    // true when Vim tab is active
-static int vimHelpScroll        = 0;
 
 // =============================================================================
 // MENU STATE
@@ -278,65 +267,6 @@ static int vimHelpScroll        = 0;
 
 enum class Menu { None, File, Edit, Sketch, Tools, Libraries };
 static Menu openMenu = Menu::None;
-
-// =============================================================================
-// SERIAL MONITOR
-// =============================================================================
-
-static bool              showSerial   = false;
-static plat_serial_t     serialFd     = plat_serial_invalid();
-static std::string       serialPort   = "";
-static std::vector<std::string> serialLog;
-static std::string       serialInput  = "";
-static int               serialScroll = 0;
-
-static const std::vector<int> BAUD_RATES = {
-    300, 600, 1200, 2400, 4800, 9600,
-    14400, 19200, 38400, 57600, 115200, 230400
-};
-static int baudIndex = 5; // default 9600
-
-static void openSerial(const std::string& port, int baud) {
-    if (plat_serial_ok(serialFd)) {
-        plat_serial_close(serialFd);
-        serialFd = plat_serial_invalid();
-    }
-    serialFd = plat_serial_open(port, baud);
-    if (!plat_serial_ok(serialFd)) {
-        serialLog.push_back("ERROR: cannot open " + port);
-        return;
-    }
-    serialPort = port;
-    serialLog.push_back("Connected: " + port + " @ " + std::to_string(baud) + " baud");
-}
-
-static void closeSerial() {
-    if (plat_serial_ok(serialFd)) {
-        plat_serial_close(serialFd);
-        serialFd = plat_serial_invalid();
-    }
-    serialLog.push_back("Disconnected.");
-    serialPort = "";
-}
-
-static void pollSerial() {
-    if (!plat_serial_ok(serialFd)) return;
-    char buf[256];
-    int n;
-    static std::string partial;
-    while ((n = plat_serial_read(serialFd, buf, sizeof(buf)-1)) > 0) {
-        buf[n] = 0;
-        partial += buf;
-        size_t pos;
-        while ((pos = partial.find('\n')) != std::string::npos) {
-            serialLog.push_back(partial.substr(0, pos));
-            partial = partial.substr(pos + 1);
-            serialScroll = std::max(0, (int)serialLog.size() - 16);
-        }
-    }
-}
-
-static std::vector<std::string> listPorts() { return plat_list_ports(); }
 
 // =============================================================================
 // LIBRARY MANAGER
@@ -362,7 +292,6 @@ static std::vector<Library> libraries = {
       "curl -sL https://github.com/nlohmann/json/releases/latest/download/json.hpp -o src/json.hpp", "" },
     { "stb_image",      "Header-only image loader",          "",                      "#include \"stb_image.h\"",
       "curl -sL https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -o src/stb_image.h", "" },
-    // Vim mode toggle is in Tools menu, not library manager
 };
 
 static bool showLibMgr    = false;
@@ -371,84 +300,140 @@ static int  exScroll      = 0;       // scroll position in examples list
 static int  exHover       = -1;      // which row the mouse is over
 
 struct ExampleEntry {
-    std::string name;   // display name (filename without path)
-    std::string path;   // full relative path e.g. "examples/Geometry.cpp"
-    std::string desc;   // one-line description extracted from the file header
+    std::string name;   // filename only (no folder prefix)
+    std::string path;   // full relative path
+    std::string desc;   // one-line description
+    std::string folder; // folder name, "" for root
+};
+// A row in the examples list is either a FOLDER header or a FILE entry
+struct ExRow {
+    bool   isFolder;
+    std::string label;    // folder name or file display name
+    std::string path;     // empty for folders
+    std::string desc;
+    std::string folder;
 };
 static std::vector<ExampleEntry> examplesList;
+static std::vector<ExRow>        exRows;          // display rows (built from examplesList)
+static std::set<std::string>     exOpenFolders;   // which folders are expanded
 
-// Scan examples/ directory and build the list
-static void refreshExamples() {
-    examplesList.clear();
+// Read one-line description from the first // comment in a .cpp file
+static std::string readSketchDesc(const std::string& path) {
+    std::ifstream f(path);
+    std::string line;
+    while (std::getline(f, line)) {
+        // Skip blank lines and === section headers
+        if (line.size()>3 && line.substr(0,3)=="// "
+                && line.find("====") == std::string::npos
+                && line.find("----") == std::string::npos) {
+            std::string d = line.substr(3);
+            if (d.size()>64) d = d.substr(0,61)+"...";
+            return d;
+        }
+    }
+    return "";
+}
 
-    // Map of known descriptions for built-in sketches
-    struct { const char* name; const char* desc; } known[] = {
-        { "Geometry.cpp",     "150 rotating arcs in three geometry styles" },
-        { "Mixture.cpp",      "Three light types (point, directional, spot) on a 3D box" },
-        { "Mandelbrot.cpp",   "Mandelbrot set rendered to pixel buffer" },
-        { "StoringInput.cpp", "Mouse trail using a circular ring buffer" },
-        { nullptr, nullptr }
-    };
-
+// Recursively scan a directory for .cpp files, adding them to examplesList.
+// folder      = the directory to scan  (e.g. "examples/camera")
+// displayRoot = prefix shown in the name column (e.g. "camera/")
+static void scanExamplesDir(const std::string& folder,
+                             const std::string& displayRoot) {
 #ifdef _WIN32
     WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA("examples\\*.cpp", &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            ExampleEntry e;
-            e.name = fd.cFileName;
-            e.path = "examples\\" + e.name;
-            // Look up description
-            e.desc = "No description";
-            for (int k=0; known[k].name; k++)
-                if (e.name == known[k].name) { e.desc = known[k].desc; break; }
-            // Try to read first comment line from file
-            if (e.desc == "No description") {
-                std::ifstream f(e.path);
-                std::string line;
-                while (std::getline(f, line)) {
-                    if (line.size()>3 && line.substr(0,3)=="// " && line.find("===")!=0) {
-                        e.desc = line.substr(3);
-                        if (e.desc.size()>60) e.desc = e.desc.substr(0,57)+"...";
-                        break;
-                    }
-                }
-            }
-            examplesList.push_back(e);
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
-    }
-#else
-    DIR* d = opendir("examples");
-    if (d) {
-        struct dirent* ent;
-        while ((ent = readdir(d))) {
-            std::string n = ent->d_name;
-            if (n.size()<5 || n.substr(n.size()-4) != ".cpp") continue;
+    // First pass: .cpp files in this folder
+    HANDLE h = FindFirstFileA((folder + "\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    std::vector<std::string> subdirs;
+    do {
+        std::string n = fd.cFileName;
+        if (n == "." || n == "..") continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            subdirs.push_back(n);
+        } else if (n.size()>4 && n.substr(n.size()-4)==".cpp") {
             ExampleEntry e;
             e.name = n;
-            e.path = "examples/" + n;
-            e.desc = "No description";
-            for (int k=0; known[k].name; k++)
-                if (e.name == known[k].name) { e.desc = known[k].desc; break; }
-            if (e.desc == "No description") {
-                std::ifstream f(e.path);
-                std::string line;
-                while (std::getline(f, line)) {
-                    if (line.size()>3 && line.substr(0,3)=="// " && line.find("===")!=0) {
-                        e.desc = line.substr(3);
-                        if (e.desc.size()>60) e.desc = e.desc.substr(0,57)+"...";
-                        break;
-                    }
-                }
-            }
+            e.path = folder + "\\" + n;
+            e.desc = readSketchDesc(e.path);
+            e.folder = displayRoot.empty() ? "" : displayRoot.substr(0, displayRoot.size()-1);
             examplesList.push_back(e);
         }
-        closedir(d);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    // Second pass: recurse into subdirectories
+    for (auto& sub : subdirs)
+        scanExamplesDir(folder + "\\" + sub, displayRoot + sub + "/");
+#else
+    DIR* d = opendir(folder.c_str());
+    if (!d) return;
+    std::vector<std::string> subdirs;
+    struct dirent* ent;
+    while ((ent = readdir(d))) {
+        std::string n = ent->d_name;
+        if (n == "." || n == "..") continue;
+        std::string full = folder + "/" + n;
+        struct stat st;
+        if (stat(full.c_str(), &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            subdirs.push_back(n);
+        } else if (n.size()>4 && n.substr(n.size()-4)==".cpp") {
+            ExampleEntry e;
+            e.name = n;
+            e.path = full;
+            e.desc = readSketchDesc(e.path);
+            e.folder = displayRoot.empty() ? "" : displayRoot.substr(0, displayRoot.size()-1);
+            examplesList.push_back(e);
+        }
     }
+    closedir(d);
+    for (auto& sub : subdirs)
+        scanExamplesDir(folder + "/" + sub, displayRoot + sub + "/");
 #endif
+}
+
+// Scan examples/ directory and all its subdirectories
+static void buildExRows() {
+    exRows.clear();
+    // Collect unique folder names (in order)
+    std::vector<std::string> folders;
+    for (auto& e : examplesList) {
+        if (!e.folder.empty()) {
+            if (std::find(folders.begin(), folders.end(), e.folder) == folders.end())
+                folders.push_back(e.folder);
+        }
+    }
+    // Root-level files first
+    for (auto& e : examplesList) {
+        if (e.folder.empty()) {
+            ExRow r; r.isFolder=false; r.label=e.name; r.path=e.path; r.desc=e.desc; r.folder="";
+            exRows.push_back(r);
+        }
+    }
+    // Then each folder as a header + its files (if expanded)
+    std::sort(folders.begin(), folders.end());
+    for (auto& f : folders) {
+        ExRow hdr; hdr.isFolder=true; hdr.label=f; hdr.folder=f;
+        exRows.push_back(hdr);
+        if (exOpenFolders.count(f)) {
+            for (auto& e : examplesList) {
+                if (e.folder == f) {
+                    ExRow r; r.isFolder=false; r.label=e.name; r.path=e.path; r.desc=e.desc; r.folder=f;
+                    exRows.push_back(r);
+                }
+            }
+        }
+    }
+}
+
+static void refreshExamples() {
+    examplesList.clear();
+    scanExamplesDir("examples", "");
     std::sort(examplesList.begin(), examplesList.end(),
-              [](const ExampleEntry& a, const ExampleEntry& b){ return a.name < b.name; });
+              [](const ExampleEntry& a, const ExampleEntry& b){
+                  if (a.folder != b.folder) return a.folder < b.folder;
+                  return a.name < b.name;
+              });
+    buildExRows();
 }
 static int  libScroll     = 0;
 static int  installingLib = -1;
@@ -507,9 +492,7 @@ static bool isPkgInstalled(const std::string&) { return false; }
 static void checkInstalled() {
     for (auto& lib : libraries) {
         if (lib.pkg.empty()) {
-            if (lib.name == "Vim mode") {
-                lib.installed = vimMode;
-            } else {
+            {
                 // Header-only: check for file in src/
                 std::string h = lib.header;
                 size_t a = h.find('"'), b = h.rfind('"');
@@ -579,6 +562,7 @@ static void deleteSel() {
 static void newFile() {
     code = {
         "// run once",
+        "",
         "void setup() {",
         "  size(640, 360);",
         "}",
@@ -628,44 +612,45 @@ static void openFile(const std::string& path) {
     outLines.push_back("Opened: " + path);
 }
 
+// Export Application state
+static bool      showExportDlg = false;
+static bool      exportWin64   = true;
+static bool      exportLinux64 = false;
+static bool      exportMac     = false;
+static std::string exportStatus = "";
+static bool      exportRunning  = false;
+static std::thread exportThread;
+
 // File picker state (used as fallback when system dialog unavailable)
 static bool fpShow  = false;
 static bool fpSave  = false;
 static std::string fpInput = "";
 
-// Opens the OS native file picker dialog.
-// Returns the chosen path, or "" if cancelled.
-static std::string sysFileDialog(bool save, const std::string& def = "") {
-    return plat_file_dialog(save, def);
-}
-
-// Open or save using system dialog; fall back to inline picker if unsupported.
 static void doOpen() {
-    std::string path = plat_file_dialog(false, "");
+    std::string path = plat_file_dialog(false, currentFile);
     if (!path.empty()) openFile(path);
-    else { fpShow=true; fpSave=false; fpInput=""; }  // fallback
+    // If empty the user cancelled -- do nothing
 }
 
 static void doSaveAs(const std::string& def = "") {
-    std::string path = plat_file_dialog(true, def.empty() ? currentFile : def);
+    std::string start = def.empty() ? currentFile : def;
+    std::string path = plat_file_dialog(true, start);
     if (!path.empty()) {
         // Ensure .cpp extension
         if (path.size() < 4 || path.substr(path.size()-4) != ".cpp")
             path += ".cpp";
         saveFile(path);
-    } else {
-        // Native dialog unavailable -- fall back to inline picker
-        fpShow = true; fpSave = true;
-        fpInput = def.empty() ? currentFile : def;
+        windowTitle("ProcessingGL IDE -- " + path);
     }
+    // If dialog returns empty the user cancelled -- do nothing
 }
 
 static void doSave() {
     if (currentFile.empty()) {
+        // No file yet -- always open native Save As dialog
         doSaveAs();
     } else {
         saveFile(currentFile);
-        // Update window title to remove the modified (*) marker
         windowTitle("ProcessingGL IDE -- " + currentFile);
     }
 }
@@ -762,6 +747,30 @@ static std::string javaToC(const std::string& line) {
         out = result;
     }
 
+
+    // Java/Processing hex color literals: #RRGGBB or #AARRGGBB -> color(0xFFRRGGBB)
+    {
+        std::string result;
+        size_t pos = 0;
+        while (pos < out.size()) {
+            if (out[pos] == '#' && (pos == 0 || !isIdChar(out[pos-1]))) {
+                // Check if followed by 6 or 8 hex digits
+                size_t end = pos + 1;
+                while (end < out.size() && isxdigit((unsigned char)out[end])) end++;
+                size_t hexlen = end - pos - 1;
+                if (hexlen == 6) {
+                    result += "color(0xFF" + out.substr(pos+1, 6) + ")";
+                    pos = end; continue;
+                } else if (hexlen == 8) {
+                    result += "color(0x" + out.substr(pos+1, 8) + ")";
+                    pos = end; continue;
+                }
+            }
+            result += out[pos++];
+        }
+        out = result;
+    }
+
     return out;
 }
 
@@ -829,11 +838,12 @@ static bool writeSketch() {
 
     if (isTopLevel) {
         // Wrap the whole sketch body in setup() so top-level code compiles.
-        // This matches Processing Java's behaviour for static sketches.
-        f << "void setup() {\n";
+        // Call noLoop() at end so the blank draw() doesn't wipe the frame.
+        // This matches Processing Java's static mode exactly.
+        f << "\nvoid setup() {\n";
         for (auto& l : code) f << "    " << sanitizeLine(l) << "\n";
+        f << "    noLoop();\n";  // static mode: run setup() once, stop
         f << "}\n";
-        // Provide an empty draw() so the program links
         f << "void draw() {}\n";
     } else {
         // Structured sketch -- paste as-is (already has setup/draw defined)
@@ -853,6 +863,9 @@ static void stopSketch() {
     plat_proc_stop(sketchProc);
     if (sketchThread.joinable()) sketchThread.detach();
 }
+
+// Path of the currently-running binary -- deleted after the sketch exits
+static std::string runningBinPath;
 
 static void sketchReaderThread(int /*unused*/) {
     char buf[4096];
@@ -911,6 +924,12 @@ static void sketchReaderThread(int /*unused*/) {
       outLines.push_back("-- sketch exited --");
       outScroll = std::max(0, (int)outLines.size() - 14); }
     sketchRunning = false;
+    // Delete the binary after the sketch exits (like Processing cleans up temp files)
+    if (!runningBinPath.empty()) {
+        plat_sleep_ms(50);           // brief pause so OS releases the file handle
+        std::remove(runningBinPath.c_str());
+        runningBinPath.clear();
+    }
 }
 
 // =============================================================================
@@ -1059,7 +1078,8 @@ static void launchSketch() {
 #ifdef _WIN32
     std::string bin = sketchBin + ".exe";
 #else
-    std::string bin = "./" + sketchBin;
+    std::string bin = sketchBin;       // built without ./ prefix; stored as-is
+    if (bin.find('/') == std::string::npos) bin = "./" + bin;
 #endif
     if (!plat_file_exists(bin)) {
         outLines.push_back("ERROR: binary not found: " + bin);
@@ -1067,10 +1087,12 @@ static void launchSketch() {
         return;
     }
     stopSketch();
+    runningBinPath = bin;              // remember for post-exit deletion
     sketchProc = plat_proc_start(bin);
     if (!plat_proc_ok(sketchProc)) {
         outLines.push_back("ERROR: failed to launch " + bin);
         outScroll = std::max(0, (int)outLines.size() - 10);
+        runningBinPath.clear();
         return;
     }
     sketchRunning = true;
@@ -1106,6 +1128,12 @@ static void doStop() {
         stopSketch();
         outLines.push_back("-- Sketch stopped --");
         outScroll = std::max(0, (int)outLines.size() - 10);
+        // Delete binary on manual stop (Processing discards its temp build on stop too)
+        if (!runningBinPath.empty()) {
+            plat_sleep_ms(80);       // give OS time to release the process handle
+            std::remove(runningBinPath.c_str());
+            runningBinPath.clear();
+        }
     }
 }
 
@@ -1209,22 +1237,13 @@ static std::vector<Tok> tokenize(const std::string& ln) {
 // =============================================================================
 
 static void qFill(float x, float y, float w, float h, int r, int g, int b, int a=255) {
-    glColor4ub(r, g, b, a);
-    glBegin(GL_QUADS);
-    glVertex2f(x,   y);   glVertex2f(x+w, y);
-    glVertex2f(x+w, y+h); glVertex2f(x,   y+h);
-    glEnd();
+    noStroke(); fill(r, g, b, a); rect(x, y, w, h);
 }
 static void qBorder(float x, float y, float w, float h, int r, int g, int b) {
-    glColor4ub(r, g, b, 255); glLineWidth(1);
-    glBegin(GL_LINE_LOOP);
-    glVertex2f(x,   y);   glVertex2f(x+w, y);
-    glVertex2f(x+w, y+h); glVertex2f(x,   y+h);
-    glEnd();
+    noFill(); stroke(r, g, b); strokeWeight(1); rect(x, y, w, h); noStroke();
 }
 static void qLine(float x1, float y1, float x2, float y2, int r, int g, int b) {
-    glColor4ub(r, g, b, 255); glLineWidth(1);
-    glBegin(GL_LINES); glVertex2f(x1, y1); glVertex2f(x2, y2); glEnd();
+    stroke(r, g, b); strokeWeight(1); line(x1, y1, x2, y2); noStroke();
 }
 static void iText(const std::string& s, float x, float y, int r, int g, int b, float sz) {
     textSize(sz); fill(r, g, b); noStroke(); text(s, x, y);
@@ -1234,10 +1253,8 @@ static float xOf(int ln, int col) {
     if (col == 0) return (float)(sbW() + GUTTER_W + 4);
     return sbW() + GUTTER_W + 4 + textWidth(code[ln].substr(0, col));
 }
-static void setClip(const std::string& s) {
-    auto* win = glfwGetCurrentContext();
-    if (win && !s.empty()) glfwSetClipboardString(win, s.c_str());
-}
+static void setClip(const std::string& s) { setClipboard(s); }
+static std::string getClip() { return getClipboard(); }
 
 // =============================================================================
 // SIDEBAR DRAW
@@ -1346,13 +1363,13 @@ static void drawMenuBar() {
     }
 
     if (openMenu==Menu::File)
-        drawDropdown(2, MENUBAR_H, {{"New","Ctrl+N"},{"Open...","Ctrl+O"},{"---",""},{"Save","Ctrl+S"},{"Save As...","Ctrl+Shift+S"},{"---",""},{"Exit",""}});
+        drawDropdown(2, MENUBAR_H, {{"New","Ctrl+N"},{"Open...","Ctrl+O"},{"---",""},{"Save","Ctrl+S"},{"Save As...","Ctrl+Shift+S"},{"---",""},{"Show Sketch Folder",""},{"Export Application...",""},{"---",""},{"Exit",""}});
     else if (openMenu==Menu::Edit)
         drawDropdown(42, MENUBAR_H, {{"Undo","Ctrl+Z"},{"Redo","Ctrl+Y"},{"---",""},{"Cut","Ctrl+X"},{"Copy","Ctrl+C"},{"Paste","Ctrl+V"},{"---",""},{"Select All","Ctrl+A"},{"Duplicate Line","Ctrl+D"},{"---",""},{"Toggle Comment","Ctrl+/"},{"Auto Format","Ctrl+Shift+F"}});
     else if (openMenu==Menu::Sketch)
-        drawDropdown(84, MENUBAR_H, {{"Build","Ctrl+B"},{"Run","Ctrl+R"},{"Stop","Ctrl+."},{"---",""},{"Show Folder",""},{"Export Binary",""}});
+        drawDropdown(84, MENUBAR_H, {{"Build","Ctrl+B"},{"Run","Ctrl+R"},{"Stop","Ctrl+."}});
     else if (openMenu==Menu::Tools)
-        drawDropdown(138, MENUBAR_H, {{"Serial Monitor","Ctrl+Shift+M"},{"Examples","Ctrl+Shift+E"},{"---",""},{"Toggle Vim Mode","Ctrl+Shift+V"},{"Auto Format","Ctrl+Shift+F"},{"---",""},{"Increase Font","Ctrl+="},{"Decrease Font","Ctrl+-"}});
+        drawDropdown(138, MENUBAR_H, {{"Examples","Ctrl+Shift+E"},{"---",""},{"Auto Format","Ctrl+Shift+F"},{"---",""},{"Increase Font","Ctrl+="},{"Decrease Font","Ctrl+-"}});
     else if (openMenu==Menu::Libraries)
         drawDropdown(182, MENUBAR_H, {{"Manage Libraries...","Ctrl+Shift+L"},{"---",""},{"Add #include",""}});
 }
@@ -1372,31 +1389,13 @@ static void drawToolbar() {
     iText(title, 10, ty+TOOLBAR_H*0.68f, 170, 180, 220, FSS);
 
     // Vim badge
-    if (vimMode) {
-        std::string mode = (vimState == VimState::NORMAL) ? "NORMAL" :
-                           (vimState == VimState::INSERT) ? "INSERT" : "VISUAL";
-        int mr = (vimState==VimState::INSERT) ? 217 : 17;
-        int mg = (vimState==VimState::INSERT) ? 119 : 108;
-        int mb = (vimState==VimState::INSERT) ? 87  : 179;
-        textSize(FST); float mw = textWidth(mode)+12;
-        qFill(textWidth(title)+18, ty+8, mw, TOOLBAR_H-16, mr, mg, mb);
-        iText(mode, textWidth(title)+24, ty+TOOLBAR_H*0.68f, 255, 255, 255, FST);
-    }
 
     // Examples button
-    float epx = width-304, epy = ty+6, epw = 80, eph = TOOLBAR_H-12;
+    float epx = width-300, epy = ty+6, epw = 80, eph = TOOLBAR_H-12;
     bool  epH = mouseX>=epx && mouseX<=epx+epw && mouseY>=epy && mouseY<=epy+eph;
     qFill(epx, epy, epw, eph, epH?38:26, epH?120:85, epH?70:52);
     qBorder(epx, epy, epw, eph, 55, 160, 100);
     iText("Examples", epx+5, epy+eph*0.72f, epH?210:170, epH?245:215, epH?220:190, FST);
-
-    // Terminal dock toggle
-    float tpx = width-300-epw-8, tpy = ty+6, tpw = 86, tph = TOOLBAR_H-12;
-    bool  tpH = mouseX>=tpx && mouseX<=tpx+tpw && mouseY>=tpy && mouseY<=tpy+tph;
-    qFill(tpx, tpy, tpw, tph, tpH?44:30, tpH?46:32, tpH?62:46);
-    qBorder(tpx, tpy, tpw, tph, 65, 65, 65);
-    iText(terminalPos==TermPos::Right ? "[=]Bottom" : "[|]Right",
-          tpx+6, tpy+tph*0.72f, 160, 170, 210, FST);
 
     // Build button (greyed out while building)
     float bx = width-196, by = ty+6, bh = TOOLBAR_H-12, bw = 92;
@@ -1438,12 +1437,10 @@ static void drawStatus() {
     if (!sketchBin.empty())   s += "  >  ./" + sketchBin;
     iText(s, 8, sy+STATUS_H*0.76f, 125, 130, 158, FST);
 
-    std::string right = (plat_serial_ok(serialFd) ? "* " + serialPort : "No port") + "  UTF-8  C++17";
+    std::string right = "UTF-8  C++17";
     textSize(FST);
     iText(right, width - textWidth(right) - 8, sy+STATUS_H*0.76f,
-          plat_serial_ok(serialFd)?80:90,
-          plat_serial_ok(serialFd)?210:95,
-          plat_serial_ok(serialFd)?80:110, FST);
+          90, 95, 110, FST);
 }
 
 // =============================================================================
@@ -1497,14 +1494,10 @@ static void drawEditor() {
             tx += textWidth(tok.s);
         }
 
-        // Cursor
-        if (li == curLine) {
+        // Cursor -- blinking line cursor
+        if (li == curLine && (frameCount/22) % 2 == 0) {
             float cx = xOf(li, curCol);
-            float cw = (curCol < (int)code[li].size()) ? textWidth(std::string(1, code[li][curCol])) : FS*0.55f;
-            if (vimState == VimState::NORMAL)
-                qFill(cx, rowTop+1, cw, lh-2, 200, 190, 100, 200);
-            else if ((frameCount/22) % 2 == 0)
-                qFill(cx, rowTop+2, 2, lh-4, 220, 210, 160);
+            qFill(cx, rowTop+2, 2, lh-4, 220, 210, 160);
         }
     }
 
@@ -1542,200 +1535,7 @@ static void drawEditor() {
 // =============================================================================
 
 // The complete list of every supported vim operation with a description
-static const char* VIM_HELP[] = {
-    "=== CURSOR MOVEMENT ===",
-    "h / Left       Move cursor left",
-    "l / Right      Move cursor right",
-    "k / Up         Move cursor up",
-    "j / Down       Move cursor down",
-    "w              Jump to start of next word",
-    "W              Jump to start of next WORD (whitespace-delimited)",
-    "b              Jump to start of previous word",
-    "B              Jump to start of previous WORD",
-    "e              Jump to end of word",
-    "E              Jump to end of WORD",
-    "0              Jump to start of line",
-    "$              Jump to end of line",
-    "^              Jump to first non-blank character",
-    "g_             Jump to last non-blank character",
-    "gg             Jump to first line",
-    "G              Jump to last line",
-    "<n>G           Jump to line n  (e.g. 42G)",
-    "<n>gg          Jump to line n  (e.g. 42gg)",
-    "Ctrl+d         Scroll half page down",
-    "Ctrl+u         Scroll half page up",
-    "Ctrl+f         Scroll full page down",
-    "Ctrl+b         Scroll full page up",
-    "H              Move to top of screen",
-    "M              Move to middle of screen",
-    "L              Move to bottom of screen",
-    "zz             Centre screen on cursor",
-    "%              Jump to matching bracket/paren",
-    "",
-    "=== INSERT MODE ===",
-    "i              Insert before cursor",
-    "I              Insert at start of line",
-    "a              Append after cursor",
-    "A              Append at end of line",
-    "o              Open new line below",
-    "O              Open new line above",
-    "s              Delete char and enter insert",
-    "S / cc         Delete line and enter insert",
-    "C              Delete to EOL and enter insert",
-    "r<c>           Replace single character with c",
-    "R              Enter replace mode (overtype)",
-    "Esc            Return to Normal mode",
-    "",
-    "=== EDITING ===",
-    "x              Delete char under cursor",
-    "X              Delete char before cursor",
-    "dd             Delete (cut) current line",
-    "<n>dd          Delete n lines",
-    "D              Delete to end of line",
-    "dw             Delete word",
-    "de             Delete to end of word",
-    "d0             Delete to start of line",
-    "d$             Delete to end of line",
-    "yy / Y         Yank (copy) current line",
-    "<n>yy          Yank n lines",
-    "yw             Yank word",
-    "y$             Yank to end of line",
-    "p              Paste after cursor / below line",
-    "P              Paste before cursor / above line",
-    "u              Undo",
-    "Ctrl+r         Redo",
-    ".              Repeat last change (not yet implemented)",
-    "~              Toggle case of char under cursor",
-    "g~~            Toggle case of entire line",
-    "J              Join line below onto current line",
-    ">>             Indent line",
-    "<<             De-indent line",
-    "<n>>>          Indent n lines",
-    "==             Auto-indent line",
-    "",
-    "=== VISUAL MODE ===",
-    "v              Start character visual mode",
-    "V              Start line visual mode",
-    "Ctrl+v         Start block visual mode (not yet implemented)",
-    "o              Go to other end of selection",
-    "Esc            Cancel selection",
-    "d / x          Delete selection",
-    "y              Yank selection",
-    "c              Change selection (delete + insert)",
-    ">              Indent selection",
-    "<              De-indent selection",
-    "~              Toggle case of selection",
-    "U              Uppercase selection",
-    "u              Lowercase selection",
-    "",
-    "=== CUT / COPY / PASTE ===",
-    "yy             Yank line to clipboard",
-    "dd             Cut line to clipboard",
-    "p / P          Paste from clipboard",
-    "Ctrl+c         Copy selection to system clipboard",
-    "Ctrl+x         Cut selection to system clipboard",
-    "Ctrl+v         Paste from system clipboard",
-    "",
-    "=== UNDO / REDO ===",
-    "u              Undo last change",
-    "U              Undo all changes on current line",
-    "Ctrl+r         Redo",
-    "",
-    "=== SEARCH (partial) ===",
-    "/ <pattern>    Not yet implemented",
-    "n / N          Not yet implemented",
-    "* / #          Not yet implemented",
-    "",
-    "=== MARKS (not yet implemented) ===",
-    "m<a>           Set mark a",
-    "`<a>           Jump to mark a",
-    "''             Jump to previous position",
-    "",
-    "=== MACROS (not yet implemented) ===",
-    "q<a>           Record macro into register a",
-    "q              Stop recording",
-    "@<a>           Play macro a",
-    "@@             Replay last macro",
-    "",
-    "=== IDE SHORTCUTS (Normal + Insert) ===",
-    "Ctrl+s         Save file",
-    "Ctrl+Shift+s   Save as...",
-    "Ctrl+o         Open file",
-    "Ctrl+n         New sketch",
-    "Ctrl+b         Build sketch",
-    "Ctrl+r         Build and run",
-    "Ctrl+.         Stop running sketch",
-    "Ctrl+/         Toggle line comment",
-    "Ctrl+Shift+f   Auto-format (re-indent)",
-    "Ctrl+d         Duplicate line",
-    "Ctrl+a         Select all",
-    "Ctrl+=         Increase font size",
-    "Ctrl+-         Decrease font size",
-    "Ctrl+Shift+v   Toggle vim mode",
-    "Ctrl+Shift+m   Open serial monitor",
-    "Ctrl+Shift+l   Open library manager",
-    "",
-    "=== EX COMMANDS (not yet implemented) ===",
-    ":w             Write (save)",
-    ":q             Quit",
-    ":wq            Write and quit",
-    ":q!            Force quit without saving",
-    ":<n>           Jump to line n",
-    ":s/foo/bar/g   Substitute (not yet implemented)",
-    nullptr
-};
 
-static void drawVimTab() {
-    int   cy   = consoleY(), cx = consoleX(), cw = consoleW();
-    int   consH= (terminalPos == TermPos::Right) ? height - editorY() : CONSOLE_H;
-
-    qFill(cx+4, cy+4, cw-4, consH-4, 18, 18, 24);
-
-    float contentTop = (float)(cy + 4 + TAB_H + 6);
-    float lh         = FST * 1.6f;
-    int   contentH   = consH - 4 - TAB_H - 10;
-    int   visRows    = std::max(1, (int)(contentH / lh));
-
-    // Count entries
-    int total = 0;
-    while (VIM_HELP[total]) total++;
-
-    vimHelpScroll = std::max(0, std::min(vimHelpScroll,
-                    std::max(0, total - visRows)));
-
-    for (int i = 0; i < visRows; i++) {
-        int li = vimHelpScroll + i;
-        if (li >= total || !VIM_HELP[li]) break;
-        std::string line = VIM_HELP[li];
-        float ry = contentTop + i * lh;
-        bool isHeader = line.size()>3 && line[0]=='=' && line[1]=='=';
-        bool isEmpty  = line.empty();
-        int r=188, g=192, b=200;
-        if (isHeader) { r=17; g=158; b=255; }
-        else if (!isEmpty) {
-            size_t sp = line.find("   ");
-            if (sp != std::string::npos) {
-                std::string key  = line.substr(0, sp);
-                std::string desc = line.substr(sp);
-                textSize(FST);
-                float kw = textWidth(key);
-                iText(key,  cx+14,    ry+lh-3, 220, 210, 100, FST);
-                iText(desc, cx+14+kw, ry+lh-3, 140, 148, 170, FST);
-                continue;
-            }
-        }
-        if (!isEmpty) iText(line, cx+14, ry+lh-3, r, g, b, FST);
-    }
-
-    // Scrollbar
-    if (total > visRows) {
-        float th  = (float)contentH;
-        float sbH = std::max(6.f, (float)visRows / total * th);
-        float sbY = contentTop + (float)vimHelpScroll / total * th;
-        qFill(cx+cw-6, contentTop, 6, th, 38, 38, 38);
-        qFill(cx+cw-6, sbY, 6, sbH, 80, 80, 80);
-    }
-}
 static void drawConsole() {
     // Snapshot output lines to avoid holding lock during render
     std::vector<std::string> snap;
@@ -1748,7 +1548,6 @@ static void drawConsole() {
         outScroll = std::max(0, (int)snap.size() - vis);
     }
 
-    pollSerial();
 
     int   cy  = consoleY(), cx = consoleX(), cw = consoleW();
     int   consH = (terminalPos == TermPos::Right) ? height - editorY() : CONSOLE_H;
@@ -1785,16 +1584,7 @@ static void drawConsole() {
     }
     // (new tab button removed -- use terminals for multiple output views)
 
-    // Vim special tab (right-aligned)
-    textSize(FST);
-    float vtw = textWidth("Vim") + 20;
-    float vtx = cx + cw - vtw - 8;
-    bool  vtA = showVimTab;
-    bool  vtH = mouseX>=vtx && mouseX<=vtx+vtw && mouseY>=cy+4 && mouseY<=cy+4+TAB_H;
-    qFill(vtx, cy+4, vtw, TAB_H, vtA?36:vtH?30:24, vtA?28:vtH?24:20, vtA?58:vtH?46:36);
-    if (vtA) qLine(vtx, cy+4+TAB_H-1, vtx+vtw, cy+4+TAB_H-1, 150, 100, 255);
-    fill(vtA?200:vtH?180:120, vtA?160:vtH?140:100, vtA?255:vtH?240:180);
-    text("Vim", vtx+6, cy+4+TAB_H-6);
+
 
     // Running indicator
     if (sketchRunning)
@@ -1809,27 +1599,18 @@ static void drawConsole() {
         iText("Stop", sx+14, sy2+sh*0.82f, 255, 180, 180, 10.0f);
     }
 
-    // Copy All button: placed in the tab bar at the right, before the Vim tab.
-    // Same Y as tabs so it feels like part of the bar, not floating below.
-    // Fixed opaque background so it never disappears on hover.
+    // Copy All button -- right side of tab bar
     {
         textSize(FST);
-        float vtw = textWidth("Vim") + 20;
-        float cbw = 68;
-        float cbx = cx + cw - vtw - 8 - cbw - 4;  // left of Vim tab
-        float cby2 = cy + 5;
-        float cbh = TAB_H - 2;
-        bool  cbH = mouseX>=cbx && mouseX<=cbx+cbw && mouseY>=cby2 && mouseY<=cby2+cbh;
-        qFill(cbx, cby2, cbw, cbh, 22, 34, 62);
+        float cbw  = 68;
+        float cbx  = (float)(cx + cw - cbw - 8);
+        float cby2 = (float)(cy + 5);
+        float cbh  = (float)(TAB_H - 2);
+        bool  cbH  = mouseX>=cbx && mouseX<=cbx+cbw && mouseY>=cby2 && mouseY<=cby2+cbh;
+        qFill  (cbx, cby2, cbw, cbh, 22, 34, 62);
         qBorder(cbx, cby2, cbw, cbh, cbH?100:50, cbH?160:80, cbH?255:140);
         iText("Copy All", cbx+5, cby2+cbh*0.76f,
               cbH?255:200, cbH?255:210, cbH?255:240, FST);
-    }
-
-    // When Vim tab is active, hand off to the Vim panel renderer
-    if (showVimTab) {
-        drawVimTab();
-        return;
     }
 
     // Output lines
@@ -1895,113 +1676,8 @@ static void drawConsole() {
 // SERIAL MONITOR OVERLAY
 // =============================================================================
 
-static void drawSerialMonitor() {
-    pollSerial();
-    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    qFill(0, 0, width, height, 0, 0, 0, 175);
-
-    float pw=640, ph=500, px=(width-pw)*0.5f, py=(height-ph)*0.5f;
-    qFill(px, py, pw, ph, 26, 26, 26);
-    qBorder(px, py, pw, ph, 65, 65, 65);
-    qFill(px, py, pw, 36, 34, 34, 34);
-    qLine(px, py+36, px+pw, py+36, 58, 58, 58);
-    iText("Serial Monitor", px+14, py+25, 222, 228, 255, FS);
-
-    // Close button
-    bool xH = mouseX>=px+pw-32 && mouseX<=px+pw-6 && mouseY>=py+6 && mouseY<=py+30;
-    qFill(px+pw-32, py+6, 26, 24, xH?190:78, 45, 52);
-    iText("X", px+pw-24, py+23, 240, 242, 248, FSS);
-
-    // Port selector
-    float portY = py+46;
-    qFill(px, portY, pw, 36, 30, 30, 30);
-    iText("Port:", px+10, portY+24, 148, 155, 185, FST);
-    auto ports = listPorts();
-    float bx = px+54;
-    if (ports.empty()) {
-        qFill(bx, portY+6, 180, 24, 38, 40, 52);
-        iText("No devices found", bx+8, portY+22, 130, 135, 160, FST);
-    }
-    for (int i = 0; i < (int)ports.size() && i < 4; i++) {
-        float bw=148, bx2=bx+i*(bw+4);
-        bool sel=(ports[i]==serialPort), hov=(mouseX>=bx2&&mouseX<=bx2+bw&&mouseY>=portY+6&&mouseY<=portY+30);
-        qFill(bx2,portY+6,bw,24,sel?28:hov?38:26,sel?95:hov?42:28,sel?210:hov?58:40);
-        qBorder(bx2,portY+6,bw,24,sel?60:50,sel?150:58,sel?240:78);
-        iText(ports[i],bx2+8,portY+21,sel?220:190,sel?230:195,sel?255:220,FST);
-    }
-
-    // Baud selector
-    float baudY = portY+42;
-    qFill(px, baudY, pw, 36, 28, 28, 28);
-    iText("Baud:", px+10, baudY+24, 148, 155, 185, FST);
-    float bbx = px+54;
-    for (int i = 0; i < (int)BAUD_RATES.size(); i++) {
-        std::string bs = std::to_string(BAUD_RATES[i]);
-        textSize(FST);
-        float bw = textWidth(bs)+14;
-        bool sel=(i==baudIndex), hov=(mouseX>=bbx&&mouseX<=bbx+bw&&mouseY>=baudY+6&&mouseY<=baudY+30);
-        qFill(bbx,baudY+6,bw,24,sel?28:hov?36:22,sel?95:hov?42:26,sel?210:hov?55:38);
-        iText(bs,bbx+7,baudY+21,sel?220:172,sel?230:176,sel?255:200,FST);
-        bbx += bw+4;
-    }
-
-    // Connect/Disconnect button
-    bool conn = plat_serial_ok(serialFd);
-    float cbx2=px+pw-126, cby2=portY+6, cbw2=118, cbh2=24;
-    bool cH=(mouseX>=cbx2&&mouseX<=cbx2+cbw2&&mouseY>=cby2&&mouseY<=cby2+cbh2);
-    qFill(cbx2,cby2,cbw2,cbh2,conn?(cH?130:95):(cH?32:20),conn?(cH?45:35):(cH?128:96),conn?(cH?45:35):(cH?218:175));
-    qBorder(cbx2,cby2,cbw2,cbh2,conn?150:45,conn?55:148,conn?55:240);
-    iText(conn?"Disconnect":"Connect",cbx2+8,cby2+cbh2*0.76f,conn?255:210,conn?160:235,conn?160:255,FST);
-
-    // Log area
-    float logy=baudY+42, logh=ph-210;
-    qFill(px,logy,pw,logh,16,16,16);
-    qBorder(px,logy,pw,logh,50,50,50);
-    float llh=FST*1.6f;
-    int visLog=(int)((logh-8)/llh);
-    serialScroll=std::max(0,std::min(serialScroll,std::max(0,(int)serialLog.size()-visLog)));
-    for (int i=0;i<visLog;i++) {
-        int li=serialScroll+i;
-        if (li>=(int)serialLog.size()) break;
-        auto& s=serialLog[li];
-        float ry=logy+4+i*llh;
-        bool isErr=s.find("ERROR")!=std::string::npos;
-        bool isConn=s.find("Connected")!=std::string::npos||s.find("Disconnected")!=std::string::npos;
-        bool isSend=s.size()>=2&&s[0]=='>'&&s[1]==' ';
-        int r=182,g=186,b=194;
-        if (isErr)  {r=255;g=100;b=100;}
-        if (isConn) {r=80; g=200;b=100;}
-        if (isSend) {r=100;g=180;b=255;}
-        iText(s,px+8,ry+llh-3,r,g,b,FST);
-    }
-
-    // Send bar
-    float sendY=logy+logh+4;
-    qFill(px,sendY,pw,44,28,30,42);
-    float inpW=pw-176;
-    qFill(px+8,sendY+8,inpW,28,16,17,24);
-    qBorder(px+8,sendY+8,inpW,28,conn?55:40,conn?85:44,conn?180:60);
-    if (conn) { fill(215,220,238); textSize(FSS); text(serialInput+"_",px+14,sendY+26); }
-    else iText("Connect first",px+14,sendY+26,90,95,120,FST);
-
-    float sx2=px+pw-162, sw2=72;
-    bool sbH2=(mouseX>=sx2&&mouseX<=sx2+sw2&&mouseY>=sendY+8&&mouseY<=sendY+36);
-    qFill(sx2,sendY+8,sw2,28,sbH2?36:22,sbH2?110:78,sbH2?205:165);
-    iText("Send",sx2+16,sendY+25,200,225,255,FSS);
-
-    float cx2=px+pw-82, cw2=72;
-    bool clH=(mouseX>=cx2&&mouseX<=cx2+cw2&&mouseY>=sendY+8&&mouseY<=sendY+36);
-    qFill(cx2,sendY+8,cw2,28,clH?72:48,clH?38:28,clH?38:28);
-    iText("Clear",cx2+12,sendY+25,225,175,175,FSS);
-}
-
-// =============================================================================
-// LIBRARY MANAGER OVERLAY
-// =============================================================================
-
 static void drawExamples() {
     // Dim the background like other overlays
-    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     qFill(0, 0, width, height, 0, 0, 0, 180);
 
     float pw = 580, ph = 480;
@@ -2042,60 +1718,73 @@ static void drawExamples() {
     float rowH   = 38.f;
     int   visRows = (int)((ph - (ly - py) - 8) / rowH);
 
-    if (examplesList.empty()) {
-        iText("No .cpp files found in examples/",
-              px+20, ly+24, 140, 145, 170, FST);
-        iText("Place your sketches in the examples/ folder next to the IDE.",
-              px+20, ly+44, 90, 95, 120, FST);
+    if (exRows.empty()) {
+        if (examplesList.empty()) {
+            iText("No .cpp files found in examples/", px+20, ly+24, 140, 145, 170, FST);
+            iText("Place .cpp files in examples/ or examples/foldername/", px+20, ly+44, 90, 95, 120, FST);
+        }
     }
 
     exScroll = std::max(0, std::min(exScroll,
-                std::max(0, (int)examplesList.size() - visRows)));
+                std::max(0, (int)exRows.size() - visRows)));
 
     exHover = -1;
     for (int i = 0; i < visRows; i++) {
         int li = exScroll + i;
-        if (li >= (int)examplesList.size()) break;
-        auto& ex  = examplesList[li];
+        if (li >= (int)exRows.size()) break;
+        auto& row = exRows[li];
         float ry  = ly + i * rowH;
         bool  hov = mouseX>=px && mouseX<=px+pw && mouseY>=ry && mouseY<=ry+rowH;
         if (hov) exHover = li;
 
-        // Row background
-        qFill(px, ry, pw, rowH, hov?34:24, hov?36:26, hov?52:36);
-        qLine(px, ry+rowH-1, px+pw, ry+rowH-1, 42, 44, 60);
+        if (row.isFolder) {
+            // Folder header row
+            bool open = exOpenFolders.count(row.folder) > 0;
+            qFill(px, ry, pw, rowH, hov?38:28, hov?40:30, hov?62:44);
+            qLine(px, ry+rowH-1, px+pw, ry+rowH-1, 55, 58, 80);
+            // Arrow indicator
+            iText(open ? "v" : ">", px+14, ry+rowH*0.72f, 160, 200, 255, FST);
+            // Folder icon + name
+            std::string lbl = "  " + row.label + "/";
+            iText(lbl, px+28, ry+rowH*0.72f, 200, 215, 255, FS);
+        } else {
+            // File row -- indent if inside a folder
+            float indent = row.folder.empty() ? 14.f : 32.f;
+            qFill(px, ry, pw, rowH, hov?34:22, hov?36:24, hov?52:34);
+            qLine(px, ry+rowH-1, px+pw, ry+rowH-1, 38, 40, 56);
 
-        // Filename (truncated)
-        std::string nm = ex.name;
-        textSize(FST);
-        while (nm.size()>2 && textWidth(nm)>170) nm.pop_back();
-        iText(nm, px+14, ry+rowH*0.70f, 210, 218, 248, FST);
+            // Filename
+            std::string nm = row.label;
+            textSize(FST);
+            while (nm.size()>2 && textWidth(nm)>175) nm.pop_back();
+            iText(nm, px+indent, ry+rowH*0.70f, 210, 218, 248, FST);
 
-        // Description (truncated)
-        std::string ds = ex.desc;
-        while (ds.size()>2 && textWidth(ds)>pw-290) ds.pop_back();
-        iText(ds, px+190, ry+rowH*0.70f, 140, 148, 175, FST);
+            // Description
+            std::string ds = row.desc;
+            while (ds.size()>2 && textWidth(ds)>pw-290) ds.pop_back();
+            iText(ds, px+190, ry+rowH*0.70f, 140, 148, 175, FST);
 
-        // Open button
-        float bx2 = px+pw-108, by2 = ry+6, bw2 = 50, bh2 = rowH-12;
-        bool  bH  = mouseX>=bx2&&mouseX<=bx2+bw2&&mouseY>=by2&&mouseY<=by2+bh2;
-        qFill(bx2, by2, bw2, bh2, bH?28:20, bH?100:72, bH?188:148);
-        qBorder(bx2, by2, bw2, bh2, 40, 140, 210);
-        iText("Open", bx2+8, by2+bh2*0.76f, 210, 230, 255, FST);
+            // Open button
+            float bx2 = px+pw-108, by2 = ry+6, bw2 = 50, bh2 = rowH-12;
+            bool  bH  = mouseX>=bx2&&mouseX<=bx2+bw2&&mouseY>=by2&&mouseY<=by2+bh2;
+            qFill(bx2, by2, bw2, bh2, bH?28:20, bH?100:72, bH?188:148);
+            qBorder(bx2, by2, bw2, bh2, 40, 140, 210);
+            iText("Open", bx2+8, by2+bh2*0.76f, 210, 230, 255, FST);
 
-        // Run button
-        float rx2 = bx2+54, ry2 = by2;
-        bool  rH2 = mouseX>=rx2&&mouseX<=rx2+bw2&&mouseY>=ry2&&mouseY<=ry2+bh2;
-        qFill(rx2, ry2, bw2, bh2, rH2?20:14, rH2?130:100, rH2?60:44);
-        qBorder(rx2, ry2, bw2, bh2, 30, 170, 80);
-        iText("Run", rx2+10, ry2+bh2*0.76f, 160, 240, 180, FST);
+            // Run button
+            float rx2 = bx2+54, ry2 = by2;
+            bool  rH2 = mouseX>=rx2&&mouseX<=rx2+bw2&&mouseY>=ry2&&mouseY<=ry2+bh2;
+            qFill(rx2, ry2, bw2, bh2, rH2?20:14, rH2?130:100, rH2?60:44);
+            qBorder(rx2, ry2, bw2, bh2, 30, 170, 80);
+            iText("Run", rx2+10, ry2+bh2*0.76f, 160, 240, 180, FST);
+        }
     }
 
     // Scrollbar
-    if ((int)examplesList.size() > visRows) {
+    if ((int)exRows.size() > visRows) {
         float th  = visRows * rowH;
-        float sbH = std::max(16.f, (float)visRows / examplesList.size() * th);
-        float sbY = ly + (float)exScroll / examplesList.size() * th;
+        float sbH = std::max(16.f, (float)visRows / exRows.size() * th);
+        float sbY = ly + (float)exScroll / exRows.size() * th;
         qFill(px+pw-6, ly, 6, th, 30, 32, 44);
         qFill(px+pw-6, sbY, 6, sbH, 80, 90, 130);
     }
@@ -2106,7 +1795,6 @@ static void drawExamples() {
 }
 
 static void drawLibMgr() {
-    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     qFill(0, 0, width, height, 0, 0, 0, 175);
 
     float pw=660, ph=460, px=(width-pw)*0.5f, py=(height-ph)*0.5f;
@@ -2151,10 +1839,7 @@ static void drawLibMgr() {
         iText(desc,px+180,ry+rowH*0.72f,152,155,178,FST);
 
         float bx2=px+pw-106, by2=ry+5, bw2=98, bh2=rowH-10;
-        if (lib.name=="Vim mode") {
-            qFill(bx2,by2,bw2,bh2,vimMode?30:25,vimMode?90:68,vimMode?40:155);
-            iText(vimMode?"Enabled":"Enable",bx2+8,by2+bh2*0.72f,vimMode?140:200,vimMode?240:224,vimMode?140:255,FST);
-        } else if (lib.installed) {
+        if (lib.installed) {
             bool aH=mouseX>=bx2&&mouseX<=bx2+bw2&&mouseY>=by2&&mouseY<=by2+bh2;
             qFill(bx2,by2,bw2,bh2,aH?38:28,aH?110:88,aH?40:32);
             qBorder(bx2,by2,bw2,bh2,48,158,58);
@@ -2203,39 +1888,220 @@ static void drawFilePicker() {
 // SETUP / DRAW
 // =============================================================================
 
+
+// =============================================================================
+// EXPORT APPLICATION
+// =============================================================================
+// Layout mirrors Processing 4 export:
+//   <sketchdir>/<sketchname>/
+//     windows64/
+//       <name>.exe
+//       lib/          (DLLs: glfw3.dll, glew32.dll, etc.)
+//       source/       (copy of .cpp source)
+//     linux64/
+//       <name>         (ELF binary)
+//       lib/
+//       source/
+//     macos/
+//       <name>
+//       lib/
+//       source/
+
+static void exportWorker(std::string sketchDir, std::string sketchName,
+                         bool doWin, bool doLin, bool doMac) {
+    auto log = [&](const std::string& s) {
+        std::lock_guard<std::mutex> lk(outMutex);
+        outLines.push_back(s);
+        outScroll = std::max(0, (int)outLines.size() - 14);
+    };
+
+    std::string baseDir = sketchDir + "/" + sketchName;
+    plat_mkdir(baseDir);
+    log("[Export] Output folder: " + baseDir);
+
+    // Helper: populate a platform folder
+    auto exportPlatform = [&](const std::string& platName,
+                               const std::string& cxx,
+                               const std::string& flags,
+                               const std::string& ext) {
+        std::string platDir  = baseDir + "/" + platName;
+        std::string libDir   = platDir + "/lib";
+        std::string srcDir   = platDir + "/source";
+        plat_mkdir(platDir);
+        plat_mkdir(libDir);
+        plat_mkdir(srcDir);
+
+        // Copy source file
+        if (!currentFile.empty()) plat_copy_file(currentFile, srcDir + "/" + sketchName + ".cpp");
+        // Copy Processing headers
+        for (auto& f : {"Processing.h","Processing.cpp","Platform.h","Processing_defaults.cpp"})
+            if (plat_file_exists(std::string("src/")+f))
+                plat_copy_file(std::string("src/")+f, srcDir+"/"+f);
+
+        // Compile
+        std::string binPath = platDir + "/" + sketchName + ext;
+        std::string cmd = cxx + " -std=c++17"
+            " src/Processing.cpp"
+            " src/Sketch_run.cpp"
+            " src/Processing_defaults.cpp"
+            " src/main.cpp"
+            " -o \"" + binPath + "\""
+            " " + flags + " 2>&1";
+        log("[Export] Compiling for " + platName + "...");
+        log("$ " + cmd);
+
+        FILE* p = popen(cmd.c_str(), "r");
+        if (!p) { log("[Export] ERROR: could not run compiler"); return; }
+        char buf[1024];
+        while (fgets(buf, sizeof(buf), p)) {
+            std::string ln(buf);
+            if (!ln.empty() && ln.back()=='\n') ln.pop_back();
+            log(ln);
+        }
+        int ret = pclose(p);
+        if (ret != 0) { log("[Export] ERROR: compile failed for " + platName); return; }
+
+        // Copy runtime DLLs / .so files from system lib paths
+        // Windows: grab from MSYS2 mingw64/bin
+        if (ext == ".exe") {
+            std::vector<std::string> dlls = {
+                "libglfw3.dll","glfw3.dll",
+                "glew32.dll","libglew32.dll",
+                "libgcc_s_seh-1.dll","libstdc++-6.dll","libwinpthread-1.dll"
+            };
+            std::vector<std::string> searchDirs = {
+                "C:/msys64/mingw64/bin","C:/msys64/ucrt64/bin","."
+            };
+            for (auto& dll : dlls) {
+                for (auto& dir : searchDirs) {
+                    std::string candidate = dir + "/" + dll;
+                    if (plat_file_exists(candidate)) {
+                        plat_copy_file(candidate, libDir + "/" + dll);
+                        log("[Export] Copied " + dll);
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Linux/Mac: note the .so dependencies; user must have them installed
+            log("[Export] Note: runtime libs (libGL, libglfw, libGLEW) must be installed on target system.");
+        }
+
+        // Copy assets (files/ folder if it exists)
+        if (plat_file_exists("files")) {
+            std::string dstFiles = platDir + "/files";
+            plat_mkdir(dstFiles);
+            plat_copy_dir("files", dstFiles);
+            log("[Export] Copied files/ assets");
+        }
+
+        log("[Export] Done: " + platName + " -> " + binPath);
+        exportStatus = "Exported to " + baseDir;
+    };
+
+#ifdef _WIN32
+    std::string winCxx   = "x86_64-w64-mingw32-g++";
+    std::string winFlags = "-lglfw3 -lglew32 -lopengl32 -lglu32 -lcomdlg32 -lshell32 -lole32 -luuid -mwindows -pthread -D_USE_MATH_DEFINES -static-libgcc -static-libstdc++";
+    // On Windows host, native compile works without cross-compiler prefix:
+    std::string natCxx   = "g++";
+    std::string natFlags = "-lglfw3 -lglew32 -lopengl32 -lglu32 -lcomdlg32 -lshell32 -lole32 -luuid -mwindows -pthread -D_USE_MATH_DEFINES";
+    std::string linCxx   = "x86_64-linux-gnu-g++";
+    std::string linFlags = "-lglfw -lGLEW -lGL -lGLU -lm -pthread";
+#else
+    std::string natCxx   = "g++";
+    std::string natFlags = "-lglfw -lGLEW -lGL -lGLU -lm -pthread";
+    std::string linCxx   = "g++";
+    std::string linFlags = natFlags;
+    std::string winCxx   = "x86_64-w64-mingw32-g++";
+    std::string winFlags = "-lglfw3 -lglew32 -lopengl32 -lglu32 -lcomdlg32 -lshell32 -lole32 -luuid -mwindows -pthread -D_USE_MATH_DEFINES";
+#endif
+
+    if (doWin) exportPlatform("windows64", (plat_file_exists("x86_64-w64-mingw32-g++")||true) ? natCxx : winCxx, natFlags, ".exe");
+    if (doLin) exportPlatform("linux64",   linCxx, linFlags, "");
+    if (doMac) exportPlatform("macos",     "clang++", "-framework OpenGL -lglfw -lGLEW -lm -pthread", "");
+
+    log("[Export] All done!");
+    exportStatus = "Export complete";
+    exportRunning = false;
+    // Open the output folder
+    plat_open_folder(baseDir);
+}
+
+static void doExportApp() {
+    showExportDlg = true;
+    exportStatus  = "";
+}
+
+// =============================================================================
+// DRAW EXPORT DIALOG
+// =============================================================================
+static void drawExportDlg() {
+    float pw = 480, ph = 320;
+    float px = (width - pw) * 0.5f, py = (height - ph) * 0.5f;
+    qFill(0, 0, width, height, 0, 0, 0, 160);
+    qFill(px, py, pw, ph, 30, 32, 42);
+    qBorder(px, py, pw, ph, 65, 70, 100);
+    qLine(px, py+38, px+pw, py+38, 55, 58, 82);
+    iText("Export Application", px+14, py+26, 228, 232, 255, FS);
+
+    // Close X
+    bool xH = mouseX>=px+pw-28&&mouseX<=px+pw-8&&mouseY>=py+8&&mouseY<=py+30;
+    iText("X", px+pw-22, py+24, xH?255:180, xH?100:140, xH?100:180, FSS);
+
+    float cy = py + 54;
+    iText("Target platforms:", px+16, cy+14, 180, 185, 210, FST);
+    cy += 22;
+
+    // Checkboxes
+    auto checkbox = [&](float cx2, float cy2, bool& val, const std::string& label) {
+        bool hov = mouseX>=cx2&&mouseX<=cx2+16&&mouseY>=cy2&&mouseY<=cy2+16;
+        qBorder(cx2, cy2, 16, 16, hov?140:80, hov?180:100, hov?255:160);
+        if (val) {
+            qFill(cx2+2, cy2+2, 12, 12, 80, 160, 255);
+            iText("✓", cx2+2, cy2+13, 255, 255, 255, FST);
+        }
+        iText(label, cx2+22, cy2+13, 210, 215, 235, FST);
+    };
+    checkbox(px+30, cy,    exportWin64,   "Windows 64-bit  (.exe + DLLs)");    cy+=30;
+    checkbox(px+30, cy,    exportLinux64, "Linux 64-bit    (ELF binary)");      cy+=30;
+    checkbox(px+30, cy,    exportMac,     "macOS           (requires Mac host)");cy+=30;
+    cy += 8;
+
+    // Sketch file extension note
+    std::string skName = sketchBin.empty() ? "untitled" : sketchBin;
+    iText("Sketch: " + skName, px+16, cy+14, 140, 145, 175, FST);  cy+=22;
+    std::string outDir = (currentFile.empty() ? "." : plat_dirname(currentFile)) + "/" + skName + "/";
+    iText("Output: " + outDir, px+16, cy+14, 100, 160, 100, FST);  cy+=28;
+
+    // Status
+    if (!exportStatus.empty())
+        iText(exportStatus, px+16, cy+14, exportRunning?200:80, exportRunning?180:220, exportRunning?80:80, FST);
+
+    // Export button
+    float bx = px+pw-130, by2 = py+ph-46, bw = 110, bh = 30;
+    bool bH   = mouseX>=bx&&mouseX<=bx+bw&&mouseY>=by2&&mouseY<=by2+bh;
+    bool anyPlatform = exportWin64||exportLinux64||exportMac;
+    int br = exportRunning?80:(anyPlatform?(bH?40:25):20);
+    int bg = exportRunning?80:(anyPlatform?(bH?160:100):60);
+    int bb = exportRunning?80:(anyPlatform?(bH?255:200):100);
+    qFill(bx, by2, bw, bh, br, bg, bb, anyPlatform?255:120);
+    iText(exportRunning?"Exporting...":"Export", bx+18, by2+bh*0.72f, 255, 255, 255, FST);
+}
+
 void setup() {
     size(1080, 740);
     windowResizable(true);
     frameRate(60);
     windowTitle("ProcessingGL IDE");
 
-    // Load window icon -- prefer logo.jpg (the ProcessingGL logo),
-    // then fall back to other common filenames.
-    // stb_image loads the file; GLFW SetWindowIcon takes RGBA pixel data.
+    // Load window icon
     {
         static const char* ICON_PATHS[] = {
             "files/logo.jpg","files/logo.png",
             "logo.jpg","logo.png","icon.png","icon.jpg",nullptr };
         for (int i=0; ICON_PATHS[i]; i++) {
             if (plat_file_exists(ICON_PATHS[i])) {
-                PImage* img = loadImage(ICON_PATHS[i]);
-                if (img && img->texID) {
-                    // Convert ARGB pixels to RGBA for GLFW
-                    std::vector<unsigned char> rgba(img->width * img->height * 4);
-                    for (int p=0; p<img->width*img->height; p++) {
-                        unsigned int px = img->pixels[p];
-                        rgba[p*4+0] = (px>>16)&0xFF;
-                        rgba[p*4+1] = (px>>8) &0xFF;
-                        rgba[p*4+2] =  px     &0xFF;
-                        rgba[p*4+3] = (px>>24)&0xFF;
-                    }
-                    GLFWimage glfwImg;
-                    glfwImg.width  = img->width;
-                    glfwImg.height = img->height;
-                    glfwImg.pixels = rgba.data();
-                    auto* win = glfwGetCurrentContext();
-                    if (win) glfwSetWindowIcon(win, 1, &glfwImg);
-                }
+                setWindowIcon(loadImage(ICON_PATHS[i]));
                 break;
             }
         }
@@ -2322,9 +2188,9 @@ void draw() {
     if (isBuilding.load()) drawBuildProgress();
 
     if (fpShow)       drawFilePicker();
-    if (showSerial)   drawSerialMonitor();
     if (showLibMgr)   drawLibMgr();
-    if (showExamples) drawExamples();
+    if (showExamples)  drawExamples();
+    if (showExportDlg) drawExportDlg();
     drawToolbar();   // chrome always on top
     drawMenuBar();
 }
@@ -2352,69 +2218,39 @@ static void mouseToLC(int& li, int& col) {
 }
 
 void mousePressed() {
-    // --- Serial monitor ---
-    if (showSerial) {
-        float pw=640,ph=500,px=(width-pw)*0.5f,py=(height-ph)*0.5f;
-        if (mouseX>=px+pw-32&&mouseX<=px+pw-6&&mouseY>=py+6&&mouseY<=py+30) { showSerial=false; return; }
-        float portY=py+46;
-        auto ports=listPorts(); float bx=px+54;
-        for (int i=0;i<(int)ports.size()&&i<4;i++) {
-            float bw=148,bx2=bx+i*(bw+4);
-            if (mouseX>=bx2&&mouseX<=bx2+bw&&mouseY>=portY+6&&mouseY<=portY+30) { serialPort=ports[i]; return; }
-        }
-        float baudY=portY+42, bbx=px+54;
-        for (int i=0;i<(int)BAUD_RATES.size();i++) {
-            textSize(FST); float bw=textWidth(std::to_string(BAUD_RATES[i]))+14;
-            if (mouseX>=bbx&&mouseX<=bbx+bw&&mouseY>=baudY+6&&mouseY<=baudY+30) { baudIndex=i; return; }
-            bbx+=bw+4;
-        }
-        float cbx2=px+pw-126,cby2=portY+6,cbw2=118,cbh2=24;
-        if (mouseX>=cbx2&&mouseX<=cbx2+cbw2&&mouseY>=cby2&&mouseY<=cby2+cbh2) {
-            if (plat_serial_ok(serialFd)) closeSerial();
-            else {
-                auto p2 = serialPort.empty() ? (ports.empty() ? "" : ports[0]) : serialPort;
-                if (!p2.empty()) openSerial(p2, BAUD_RATES[baudIndex]);
-                else serialLog.push_back("ERROR: no port selected");
-            }
-            return;
-        }
-        float logy=baudY+42,logh=ph-210,sendY=logy+logh+4;
-        float sx2=px+pw-162,cx2=px+pw-82,cw2=72;
-        if (mouseX>=sx2&&mouseX<=sx2+72&&mouseY>=sendY+8&&mouseY<=sendY+36) {
-            if (plat_serial_ok(serialFd)&&!serialInput.empty()) {
-                std::string s=serialInput+"\n";
-                plat_serial_write(serialFd,s.c_str(),(int)s.size());
-                serialLog.push_back("> "+serialInput); serialInput="";
-            }
-            return;
-        }
-        if (mouseX>=cx2&&mouseX<=cx2+cw2&&mouseY>=sendY+8&&mouseY<=sendY+36) { serialLog.clear(); return; }
-        return;
-    }
 
     // --- Examples browser ---
     if (showExamples) {
         float pw=580,ph=480,px=(width-pw)*0.5f,py=(height-ph)*0.5f;
         if (mouseX<px||mouseX>px+pw||mouseY<py||mouseY>py+ph) { showExamples=false; return; }
-        // Close X button
+        // Close X
         if (mouseX>=px+pw-34&&mouseX<=px+pw-10&&mouseY>=py+8&&mouseY<=py+30) { showExamples=false; return; }
-        // Refresh button
+        // Refresh
         if (mouseX>=px+pw-90&&mouseX<=px+pw-34&&mouseY>=py+8&&mouseY<=py+30) { refreshExamples(); return; }
-        // Row Open/Run buttons
+        // Rows
         float ly=py+44+22, rowH=38.f;
         int   vis=(int)((ph-(ly-py)-8)/rowH);
         for (int i=0;i<vis;i++) {
             int li=exScroll+i;
-            if (li>=(int)examplesList.size()) break;
+            if (li>=(int)exRows.size()) break;
             float ry=ly+i*rowH;
-            auto& ex=examplesList[li];
+            auto& row=exRows[li];
+            if (mouseY<ry||mouseY>ry+rowH) continue;
+            if (row.isFolder) {
+                // Toggle folder open/closed
+                if (exOpenFolders.count(row.folder)) exOpenFolders.erase(row.folder);
+                else exOpenFolders.insert(row.folder);
+                buildExRows();
+                exScroll=std::max(0,std::min(exScroll,(int)exRows.size()-vis));
+                return;
+            }
             float bx2=px+pw-108,by2=ry+6,bw2=50,bh2=rowH-12;
             if (mouseX>=bx2&&mouseX<=bx2+bw2&&mouseY>=by2&&mouseY<=by2+bh2) {
-                openFile(ex.path); showExamples=false; return;
+                openFile(row.path); showExamples=false; return;
             }
             float rx2=bx2+54;
             if (mouseX>=rx2&&mouseX<=rx2+bw2&&mouseY>=by2&&mouseY<=by2+bh2) {
-                openFile(ex.path); showExamples=false; pendingRun=true; doCompile(); return;
+                openFile(row.path); showExamples=false; pendingRun=true; doCompile(); return;
             }
         }
         return;
@@ -2431,7 +2267,7 @@ void mousePressed() {
             auto& lib=libraries[li];
             float ry=ly+i*rowH, bx2=px+pw-106, by2=ry+5, bw2=98, bh2=rowH-10;
             if (mouseX>=bx2&&mouseX<=bx2+bw2&&mouseY>=by2&&mouseY<=by2+bh2) {
-                if (lib.name=="Vim mode") { vimMode=!vimMode; vimInsert=false; vimState=VimState::NORMAL; lib.installed=vimMode; libStatus=vimMode?"Vim enabled":"Vim disabled"; return; }
+
                 if (lib.installed) {
                     int ins=0; for(int ci=0;ci<(int)code.size();ci++) if(code[ci].find("#include")!=std::string::npos) ins=ci+1;
                     code.insert(code.begin()+ins, lib.header); modified=true; libStatus="Added: "+lib.header;
@@ -2502,10 +2338,10 @@ void mousePressed() {
     // --- Dropdown item clicks ---
     if (openMenu != Menu::None) {
         float mx=0; std::vector<MenuItem> items;
-        if      (openMenu==Menu::File)      {mx=2;   items={{"New",""},{"Open...",""},{"---",""},{"Save",""},{"Save As...",""},{"---",""},{"Exit",""}};}
+        if      (openMenu==Menu::File)      {mx=2;   items={{"New",""},{"Open...",""},{"---",""},{"Save",""},{"Save As...",""},{"---",""},{"Show Sketch Folder",""},{"Export Application...",""},{"---",""},{"Exit",""}};}
         else if (openMenu==Menu::Edit)      {mx=42;  items={{"Undo",""},{"Redo",""},{"---",""},{"Cut",""},{"Copy",""},{"Paste",""},{"---",""},{"Select All",""},{"Duplicate Line",""},{"---",""},{"Toggle Comment",""},{"Auto Format",""}};}
-        else if (openMenu==Menu::Sketch)    {mx=84;  items={{"Build",""},{"Run",""},{"Stop",""},{"---",""},{"Show Folder",""},{"Export Binary",""}};}
-        else if (openMenu==Menu::Tools)     {mx=138; items={{"Serial Monitor",""},{"---",""},{"Toggle Vim Mode",""},{"---",""},{"Auto Format",""},{"---",""},{"Increase Font",""},{"Decrease Font",""}};}
+        else if (openMenu==Menu::Sketch)    {mx=84;  items={{"Build",""},{"Run",""},{"Stop",""}};}
+        else if (openMenu==Menu::Tools)     {mx=138; items={{"Examples",""},{"---",""},{"Auto Format",""},{"---",""},{"Increase Font",""},{"Decrease Font",""}};}
         else if (openMenu==Menu::Libraries) {mx=182; items={{"Manage Libraries...",""},{"---",""},{"Add #include",""}};}
         float my=MENUBAR_H, pw=210;
         for (int i=0;i<(int)items.size();i++) {
@@ -2521,13 +2357,13 @@ void mousePressed() {
                 else if (lbl=="Examples")           { refreshExamples(); showExamples=true; }
                 else if (lbl=="Run")                doRun();
                 else if (lbl=="Stop")               doStop();
-                else if (lbl=="Show Folder")        plat_open_folder(".");
+                else if (lbl=="Show Sketch Folder") { std::string d=currentFile.empty()?".":plat_dirname(currentFile); plat_open_folder(d); }
+                else if (lbl=="Export Application...") doExportApp();
                 else if (lbl=="Examples")           { refreshExamples(); showExamples=!showExamples; }
-                else if (lbl=="Toggle Vim Mode")    {vimMode=!vimMode;vimInsert=false;vimState=VimState::NORMAL;}
+                
                 else if (lbl=="Auto Format")        {} // handled in keyPressed
                 else if (lbl=="Increase Font")      {FS=std::min(32.0f,FS+1);}
                 else if (lbl=="Decrease Font")      {FS=std::max(8.0f,FS-1);}
-                else if (lbl=="Serial Monitor")     {showSerial=true;checkInstalled();}
                 else if (lbl=="Manage Libraries..."){showLibMgr=true;checkInstalled();}
                 return;
             }
@@ -2545,7 +2381,7 @@ void mousePressed() {
         // Examples button
         { float epx2=(float)(width-304), epw2=80;
           if (mouseX>=epx2&&mouseX<=epx2+epw2) { refreshExamples(); showExamples=true; return; } }
-        if (mouseX>=width-300&&mouseX<=width-214)    { terminalPos=(terminalPos==TermPos::Bottom)?TermPos::Right:TermPos::Bottom; return; }
+
     }
 
     // --- Console area ---
@@ -2562,50 +2398,36 @@ void mousePressed() {
             if (mouseX>=sx&&mouseX<=sx+sw2&&mouseY>=sy2&&mouseY<=sy2+sh) { doStop(); return; }
         }
 
-        // Tab bar clicks
+        // Tab bar clicks (including Copy All which lives in the tab bar row)
         if (mouseY>=cy+4&&mouseY<=cy+4+TAB_H) {
-            // Check Vim special tab first (right-aligned)
+            // Check Copy All first -- it sits on the right of the tab bar
             textSize(FST);
-            float vtw2 = textWidth("Vim") + 20;
-            float vtx2 = consoleX() + consoleW() - vtw2 - 8;
-            if (mouseX>=vtx2&&mouseX<=vtx2+vtw2) {
-                showVimTab = !showVimTab;
+            float cbw2=68, cbx=(float)(consoleX()+consoleW()-cbw2-8);
+            float cby2=(float)(consoleY()+5), cbh=(float)(TAB_H-2);
+            if (mouseX>=cbx&&mouseX<=cbx+cbw2) {
+                // Copy All clicked
+                std::string all;
+                { std::lock_guard<std::mutex> lk(outMutex);
+                  for (auto& l : terminals[activeTab].lines) { all += l; all += "\n"; }
+                }
+                if (!all.empty()) {
+                    plat_set_clipboard(all);
+                    setClipboard(all);
+                }
                 return;
             }
-
+            // Tab switching
             float tx=(float)(consoleX()+8);
             for (int i=0;i<(int)terminals.size();i++) {
                 textSize(FST); float tw=textWidth(terminals[i].name)+20;
-                if (mouseX>=tx&&mouseX<=tx+tw) { activeTab=i; consoleSelLine=-1; showVimTab=false; return; }
+                if (mouseX>=tx&&mouseX<=tx+tw) { activeTab=i; consoleSelLine=-1; return; }
                 tx+=tw+2;
-            }
-            // + button removed
-            return;
-        }
-
-        // Copy All -- in the tab bar at the right (before Vim tab)
-        textSize(FST);
-        float _vtw = textWidth("Vim") + 20;
-        float cbw2=68, cbx=(float)(consoleX()+consoleW()-_vtw-8-cbw2-4);
-        float cby2=(float)(consoleY()+5), cbh=(float)(TAB_H-2);
-        if (mouseX>=cbx&&mouseX<=cbx+cbw2&&mouseY>=cby2&&mouseY<=cby2+cbh) {
-            // Copy all lines from the active tab to clipboard
-            std::string all;
-            { std::lock_guard<std::mutex> lk(outMutex);
-              auto& lines = terminals[activeTab].lines;
-              for (auto& l : lines) { all += l; all += "\n"; }
-            }
-            if (!all.empty()) {
-                setClip(all);
-                outLines.push_back("Copied " + std::to_string(
-                    std::count(all.begin(), all.end(), '\n')) + " lines to clipboard.");
-                outScroll = std::max(0, (int)outLines.size() - 10);
             }
             return;
         }
 
         // Line click -- copy line to clipboard
-        if (!showVimTab && mouseY>=cy+4+TAB_H&&mouseY<height) {
+        if (mouseY>=cy+4+TAB_H&&mouseY<height) {
             float lh2=FSS*1.5f;
             int vi=(int)((mouseY-(cy+4+TAB_H))/lh2);
             auto& tlines=terminals[activeTab].lines;
@@ -2632,7 +2454,7 @@ void mousePressed() {
         }
 
         // Click count detection
-        double now=glfwGetTime();
+        double now=(double)millis()/1000.0;
         if (now-lastClickTime<0.35) clickCount++; else clickCount=1;
         lastClickTime=now;
 
@@ -2686,35 +2508,27 @@ void mouseReleased() {
 }
 
 void mouseWheel(int delta) {
-    auto* win=glfwGetCurrentContext();
-    bool ctrl=win&&(glfwGetKey(win,GLFW_KEY_LEFT_CONTROL)==GLFW_PRESS||glfwGetKey(win,GLFW_KEY_RIGHT_CONTROL)==GLFW_PRESS);
+    bool ctrl = isCtrlDown();
+    // GLFW: positive delta = scroll up (wheel rotated away from user).
+    // Negate so scroll up moves content up (decreases scroll offset).
+    int d = -delta;
 
-    if (showLibMgr)   { libScroll+=delta; return; }
+    if (showLibMgr)   { libScroll=std::max(0,libScroll+d); return; }
     if (showExamples) {
         int vis=(int)((480.f-90.f)/38.f);
-        exScroll=std::max(0,std::min(exScroll+delta,
-                 std::max(0,(int)examplesList.size()-vis)));
+        exScroll=std::max(0,std::min(exScroll+d,
+                 std::max(0,(int)exRows.size()-vis)));
         return;
     }
-    if (showSerial) { serialScroll+=delta; return; }
-    if (ctrl) { FS=std::max(8.0f,std::min(32.0f,FS-(float)delta)); return; }
-    if (sidebarVisible&&mouseX<SIDEBAR_W) { ftScroll=std::max(0,ftScroll+delta); return; }
+    if (ctrl) { FS=std::max(8.0f,std::min(32.0f,FS-(float)d)); return; }
+    if (sidebarVisible&&mouseX<SIDEBAR_W) { ftScroll=std::max(0,ftScroll+d); return; }
     if (mouseY>=editorY()&&mouseY<editorY()+editorH()) {
-        scrollTop=std::max(0,std::min(scrollTop+delta*3,std::max(0,(int)code.size()-visLines()))); return;
+        scrollTop=std::max(0,std::min(scrollTop+d*3,std::max(0,(int)code.size()-visLines()))); return;
     }
     if (mouseY>=consoleY()) {
-        if (showVimTab) {
-            int total2 = 0;
-            while (VIM_HELP[total2]) total2++;
-            float lhv = FST * 1.6f;
-            int visv = std::max(1,(int)((CONSOLE_H-4-TAB_H-10)/lhv));
-            vimHelpScroll = std::max(0,std::min(vimHelpScroll+delta*2,std::max(0,total2-visv)));
-            return;
-        } else {
-            float lh2=FSS*1.5f; int vis=std::max(1,(int)((CONSOLE_H-4-TAB_H)/lh2));
-            auto& ts=terminals[activeTab].scroll; auto& tl=terminals[activeTab].lines;
-            ts=std::max(0,std::min(ts+delta*2,std::max(0,(int)tl.size()-vis)));
-        }
+        float lh2=FSS*1.5f; int vis=std::max(1,(int)((CONSOLE_H-4-TAB_H)/lh2));
+        auto& ts=terminals[activeTab].scroll; auto& tl=terminals[activeTab].lines;
+        ts=std::max(0,std::min(ts+d*2,std::max(0,(int)tl.size()-vis)));
     }
 }
 
@@ -2737,240 +2551,118 @@ static void autoFormat() {
 }
 
 void keyPressed() {
-    auto* win=glfwGetCurrentContext();
-    bool ctrl=win&&(glfwGetKey(win,GLFW_KEY_LEFT_CONTROL)==GLFW_PRESS||glfwGetKey(win,GLFW_KEY_RIGHT_CONTROL)==GLFW_PRESS);
-    bool shift=win&&(glfwGetKey(win,GLFW_KEY_LEFT_SHIFT)==GLFW_PRESS||glfwGetKey(win,GLFW_KEY_RIGHT_SHIFT)==GLFW_PRESS);
-
-    // --- Serial input ---
-    if (showSerial) {
-        if (keyCode==ESC) { showSerial=false; return; }
-        if (keyCode==ENTER&&plat_serial_ok(serialFd)&&!serialInput.empty()) {
-            std::string ts=serialInput+"\n"; plat_serial_write(serialFd,ts.c_str(),(int)ts.size());
-            serialLog.push_back("> "+serialInput); serialInput="";
-        }
-        if (keyCode==BACKSPACE&&!serialInput.empty()) serialInput.pop_back();
-        return;
-    }
+    bool ctrl = isCtrlDown(), shift = isShiftDown();
 
     // --- File picker input ---
     if (fpShow) {
-        if (keyCode==ESC) { fpShow=false; return; }
-        if (keyCode==ENTER&&!fpInput.empty()) { if(fpSave)saveFile(fpInput);else openFile(fpInput); fpShow=false; }
-        if (keyCode==BACKSPACE&&!fpInput.empty()) fpInput.pop_back();
+        if (key==ESC) { fpShow=false; return; }
+        if ((key==ENTER||key==RETURN)&&!fpInput.empty()) { if(fpSave)saveFile(fpInput);else openFile(fpInput); fpShow=false; }
+        if (key==BACKSPACE&&!fpInput.empty()) fpInput.pop_back();
         return;
     }
 
     // --- ESC: close modals or exit vim modes ---
-    if (keyCode==ESC) {
-        if (vimMode&&vimState!=VimState::NORMAL) { vimState=VimState::NORMAL; vimInsert=false; clearSel(); clamp(); return; }
-        if (showSerial||showLibMgr||fpShow||showExamples) { showSerial=showLibMgr=fpShow=showExamples=false; return; }
+    if (key==ESC) {
+        if (showLibMgr||fpShow||showExamples||showExportDlg) { showLibMgr=fpShow=showExamples=showExportDlg=false; return; }
         if (openMenu!=Menu::None) { openMenu=Menu::None; return; }
         clearSel(); return;
     }
 
     // --- Ctrl+. stop sketch ---
-    if (ctrl && keyCode==GLFW_KEY_PERIOD) { doStop(); return; }
+    if (ctrl && keyCode==PERIOD_KEY) { doStop(); return; }
 
-    // --- Vim NORMAL mode ---
-    if (vimMode && vimState==VimState::NORMAL) {
-        static int vimN=0;
-        if (key>='1'&&key<='9'&&vimN==0){vimN=key-'0';return;}
-        if (key=='0'&&vimN>0){vimN*=10;return;}
-        int n=(vimN>0)?vimN:1; vimN=0;
+    // --- Ctrl+= / Ctrl+- font size ---
+    if (ctrl && keyCode==EQUAL_KEY) { FS=std::min(32.0f,FS+1); return; }
+    if (ctrl && keyCode==MINUS_KEY) { FS=std::max(8.0f,FS-1);  return; }
 
-        // Visual mode ops
-        bool isVis=(vimState==VimState::VISUAL||vimState==VimState::VISUAL_LINE);
-        if (isVis) {
-            if (key=='d'||key=='x'){pushUndo();setClip(getSelected());deleteSel();vimState=VimState::NORMAL;return;}
-            if (key=='y'){setClip(getSelected());vimState=VimState::NORMAL;clearSel();return;}
-            if (key=='c'){pushUndo();setClip(getSelected());deleteSel();vimState=VimState::INSERT;vimInsert=true;return;}
-            if (key=='>'&&shift){pushUndo();int l0,c0,l1,c1;selRange(l0,c0,l1,c1);for(int l=l0;l<=l1;l++)code[l]="  "+code[l];vimState=VimState::NORMAL;return;}
-            if (key=='<'){pushUndo();int l0,c0,l1,c1;selRange(l0,c0,l1,c1);for(int l=l0;l<=l1;l++)if(code[l].size()>=2&&code[l][0]==' '&&code[l][1]==' ')code[l].erase(0,2);vimState=VimState::NORMAL;return;}
-        }
-
-        // Motions
-        if (keyCode==GLFW_KEY_H||keyCode==LEFT_KEY){for(int i=0;i<n;i++){if(curCol>0)curCol--;else if(curLine>0){curLine--;curCol=(int)code[curLine].size();}}clamp();return;}
-        if (keyCode==GLFW_KEY_L||keyCode==RIGHT_KEY){for(int i=0;i<n;i++){if(curCol<(int)code[curLine].size())curCol++;else if(curLine<(int)code.size()-1){curLine++;curCol=0;}}clamp();return;}
-        if (keyCode==GLFW_KEY_K||keyCode==UP){curLine-=n;clamp();ensureVis();return;}
-        if (keyCode==GLFW_KEY_J||keyCode==DOWN){curLine+=n;clamp();ensureVis();return;}
-        if (key=='0'){curCol=0;return;}
-        if (key=='$'){curCol=(int)code[curLine].size();return;}
-        if (key=='^'){curCol=0;while(curCol<(int)code[curLine].size()&&isspace((unsigned char)code[curLine][curCol]))curCol++;return;}
-        if (key=='G'&&shift){curLine=(int)code.size()-1;curCol=0;ensureVis();return;}
-        if (key=='w'){while(curCol<(int)code[curLine].size()&&!isspace((unsigned char)code[curLine][curCol]))curCol++;while(curCol<(int)code[curLine].size()&&isspace((unsigned char)code[curLine][curCol]))curCol++;clamp();return;}
-        if (key=='b'){if(curCol==0&&curLine>0){curLine--;curCol=(int)code[curLine].size();}if(curCol>0)curCol--;while(curCol>0&&isspace((unsigned char)code[curLine][curCol-1]))curCol--;while(curCol>0&&!isspace((unsigned char)code[curLine][curCol-1]))curCol--;clamp();return;}
-        if ((keyCode==GLFW_KEY_D&&ctrl)||(keyCode==GLFW_KEY_F&&ctrl)){curLine+=visLines()/2;clamp();ensureVis();return;}
-        if ((keyCode==GLFW_KEY_U&&ctrl)||(keyCode==GLFW_KEY_B&&ctrl)){curLine-=visLines()/2;clamp();ensureVis();return;}
-
-        // Enter insert mode
-        if (key=='i'){vimState=VimState::INSERT;vimInsert=true;clearSel();return;}
-        if (key=='I'){curCol=0;while(curCol<(int)code[curLine].size()&&isspace((unsigned char)code[curLine][curCol]))curCol++;vimState=VimState::INSERT;vimInsert=true;clearSel();return;}
-        if (key=='a'){if(curCol<(int)code[curLine].size())curCol++;vimState=VimState::INSERT;vimInsert=true;clearSel();clamp();return;}
-        if (key=='A'){curCol=(int)code[curLine].size();vimState=VimState::INSERT;vimInsert=true;clearSel();return;}
-        if (key=='o'){pushUndo();std::string ind="";for(char c:code[curLine])if(isspace((unsigned char)c))ind+=c;else break;if(!code[curLine].empty()&&code[curLine].back()=='{')ind+="  ";code.insert(code.begin()+curLine+1,ind);curLine++;curCol=(int)ind.size();vimState=VimState::INSERT;vimInsert=true;clamp();ensureVis();return;}
-        if (key=='O'){pushUndo();std::string ind="";if(curLine>0)for(char c:code[curLine])if(isspace((unsigned char)c))ind+=c;else break;code.insert(code.begin()+curLine,ind);curCol=(int)ind.size();vimState=VimState::INSERT;vimInsert=true;clamp();ensureVis();return;}
-
-        // Edit
-        if (key=='x'){pushUndo();if(curCol<(int)code[curLine].size())code[curLine].erase(curCol,1);clamp();return;}
-        if (key=='X'){pushUndo();if(curCol>0){code[curLine].erase(curCol-1,1);curCol--;}return;}
-        if (key=='r'){vimCmd="r";return;}
-        if (key=='~'){pushUndo();if(curCol<(int)code[curLine].size()){char&c=code[curLine][curCol];c=isupper(c)?tolower(c):toupper(c);curCol++;}return;}
-        if (key=='J'){pushUndo();if(curLine<(int)code.size()-1){std::string t=code[curLine+1];size_t s=t.find_first_not_of(" \t");code[curLine]+=" "+(s!=std::string::npos?t.substr(s):t);code.erase(code.begin()+curLine+1);}return;}
-        if (key=='D'){pushUndo();code[curLine]=code[curLine].substr(0,curCol);return;}
-
-        // dd, yy, cc (double-key commands)
-        if (key=='d'){static bool ld=false;if(ld){pushUndo();setClip(code[curLine]);for(int i=0;i<n;i++){code.erase(code.begin()+std::min(curLine,(int)code.size()-1));if(code.empty())code.push_back("");}clamp();ld=false;}else ld=true;return;}
-        if (key=='y'){static bool ly=false;if(ly){setClip(code[curLine]);ly=false;}else ly=true;return;}
-        if (key=='Y'){setClip(code[curLine]);return;}
-        if (key=='c'){static bool lc=false;if(lc){pushUndo();std::string ind="";for(char c:code[curLine])if(isspace((unsigned char)c))ind+=c;else break;code[curLine]=ind;curCol=(int)ind.size();vimState=VimState::INSERT;vimInsert=true;lc=false;}else lc=true;return;}
-        if (key=='C'){pushUndo();code[curLine]=code[curLine].substr(0,curCol);vimState=VimState::INSERT;vimInsert=true;return;}
-        if (key=='s'){pushUndo();if(curCol<(int)code[curLine].size())code[curLine].erase(curCol,1);vimState=VimState::INSERT;vimInsert=true;return;}
-        if (key=='S'){pushUndo();std::string ind="";for(char c:code[curLine])if(isspace((unsigned char)c))ind+=c;else break;code[curLine]=ind;curCol=(int)ind.size();vimState=VimState::INSERT;vimInsert=true;return;}
-
-        // Paste
-        if (key=='p'){const char*cb=glfwGetClipboardString(win);if(cb){pushUndo();code.insert(code.begin()+curLine+1,std::string(cb));curLine++;clamp();ensureVis();}return;}
-        if (key=='P'){const char*cb=glfwGetClipboardString(win);if(cb){pushUndo();code.insert(code.begin()+curLine,std::string(cb));ensureVis();}return;}
-
-        // Undo/redo
-        if (key=='u'){if(!undoStack.empty()){auto&u=undoStack.back();redoStack.push_back({code,{curLine,curCol}});code=u.first;curLine=u.second.first;curCol=u.second.second;undoStack.pop_back();clearSel();clamp();ensureVis();}return;}
-        if (keyCode==GLFW_KEY_R&&ctrl){if(!redoStack.empty()){auto&u=redoStack.back();undoStack.push_back({code,{curLine,curCol}});code=u.first;curLine=u.second.first;curCol=u.second.second;redoStack.pop_back();clearSel();clamp();ensureVis();}return;}
-
-        // Visual
-        if (key=='v'&&!isVis){vimState=VimState::VISUAL;vimAnchorLine=curLine;vimAnchorCol=curCol;selLine=curLine;selCol=curCol;return;}
-        if (key=='V'&&shift&&!isVis){vimState=VimState::VISUAL_LINE;vimAnchorLine=curLine;vimAnchorCol=0;selLine=curLine;selCol=0;curCol=(int)code[curLine].size();return;}
-        if (key=='v'&&isVis){vimState=VimState::NORMAL;vimInsert=false;clearSel();return;}
-        if (key=='>'&&shift){pushUndo();code[curLine]="  "+code[curLine];return;}
-        if (key=='<'){pushUndo();if(code[curLine].size()>=2&&code[curLine][0]==' '&&code[curLine][1]==' ')code[curLine].erase(0,2);return;}
-
-        return; // swallow in NORMAL
-    }
-
-    // --- Ctrl shortcuts ---
+    // --- Ctrl+Shift+* shortcuts ---
     if (ctrl) {
-        if (keyCode==GLFW_KEY_N) { newFile(); return; }
-        if (keyCode==GLFW_KEY_O) { doOpen(); return; }
-        if (keyCode==GLFW_KEY_S) { if(shift) doSaveAs(currentFile); else doSave(); return; }
-        if (keyCode==GLFW_KEY_B) { doCompile(); return; }
-        if (keyCode==GLFW_KEY_R) { doRun(); return; }
-        if (keyCode==GLFW_KEY_M&&shift) { showSerial=true; return; }
-        if (keyCode==GLFW_KEY_L&&shift) { showLibMgr=true;checkInstalled(); return; }
-        if (keyCode==GLFW_KEY_E&&shift) { refreshExamples();showExamples=!showExamples; return; }
-        if (keyCode==GLFW_KEY_V&&shift) { vimMode=!vimMode;vimInsert=false;vimState=VimState::NORMAL; return; }
-        if (keyCode==GLFW_KEY_Z&&!shift) { if(!undoStack.empty()){auto&u=undoStack.back();redoStack.push_back({code,{curLine,curCol}});code=u.first;curLine=u.second.first;curCol=u.second.second;undoStack.pop_back();clearSel();clamp();ensureVis();} return; }
-        if (keyCode==GLFW_KEY_Y||(keyCode==GLFW_KEY_Z&&shift)) { if(!redoStack.empty()){auto&u=redoStack.back();undoStack.push_back({code,{curLine,curCol}});code=u.first;curLine=u.second.first;curCol=u.second.second;redoStack.pop_back();clearSel();clamp();ensureVis();} return; }
-        if (keyCode==GLFW_KEY_A) { selLine=0;selCol=0;curLine=(int)code.size()-1;curCol=(int)code.back().size(); return; }
-        if (keyCode==GLFW_KEY_C) { setClip(getSelected()); return; }
-        if (keyCode==GLFW_KEY_X) { pushUndo();setClip(getSelected());deleteSel(); return; }
-        if (keyCode==GLFW_KEY_V) {
-            const char* cb=glfwGetClipboardString(win); if(!cb) return;
-            pushUndo(); if(hasSel())deleteSel();
-            std::istringstream ss{std::string(cb)}; std::string ln; bool first=true;
-            while(std::getline(ss,ln)){if(!first){code.insert(code.begin()+curLine+1,code[curLine].substr(curCol));code[curLine]=code[curLine].substr(0,curCol);curLine++;curCol=0;}code[curLine].insert(curCol,ln);curCol+=(int)ln.size();first=false;}
-            clamp();ensureVis(); return;
+        if (keyCode==KEY_N) { newFile(); return; }
+        if (keyCode==KEY_O) { doOpen(); return; }
+        if (keyCode==KEY_S) { if(shift) doSaveAs(currentFile); else doSave(); return; }
+        if (keyCode==KEY_B) { doCompile(); return; }
+        if (keyCode==KEY_R) { doRun(); return; }
+        if (keyCode==KEY_L&&shift) { showLibMgr=true;checkInstalled(); return; }
+        if (keyCode==KEY_E&&shift) { refreshExamples();showExamples=!showExamples; return; }
+        if (keyCode==KEY_Z&&!shift) { if(!undoStack.empty()){auto&u=undoStack.back();redoStack.push_back({code,{curLine,curCol}});code=u.first;curLine=u.second.first;curCol=u.second.second;undoStack.pop_back();clearSel();clamp();ensureVis();} return; }
+        if (keyCode==KEY_Y||(keyCode==KEY_Z&&shift)) { if(!redoStack.empty()){auto&u=redoStack.back();undoStack.push_back({code,{curLine,curCol}});code=u.first;curLine=u.second.first;curCol=u.second.second;redoStack.pop_back();clearSel();clamp();ensureVis();} return; }
+        if (keyCode==KEY_A) { selLine=0;selCol=0;curLine=(int)code.size()-1;curCol=(int)code.back().size(); return; }
+        if (keyCode==KEY_C) { setClip(getSelected()); return; }
+        if (keyCode==KEY_X) { pushUndo();setClip(getSelected());deleteSel(); return; }
+        if (keyCode==KEY_V) {
+            std::string cbStr=getClipboard(); const char* cb=cbStr.empty()?nullptr:cbStr.c_str();
+            if (cb) {
+                pushUndo(); if(hasSel())deleteSel();
+                std::istringstream ss(cb); std::string ln; bool first=true;
+                while(std::getline(ss,ln)){if(!first){code.insert(code.begin()+curLine+1,code[curLine].substr(curCol));code[curLine]=code[curLine].substr(0,curCol);curLine++;curCol=0;}code[curLine].insert(curCol,ln);curCol+=(int)ln.size();first=false;}
+                clamp();ensureVis();
+            }
+            return;
         }
-        if (keyCode==GLFW_KEY_D) { pushUndo();code.insert(code.begin()+curLine+1,code[curLine]);curLine++;clamp();ensureVis(); return; }
-        if (keyCode==GLFW_KEY_SLASH) { pushUndo();auto&ln=code[curLine];if(ln.size()>=2&&ln[0]=='/'&&ln[1]=='/')ln.erase(0,2);else ln="//"+ln; return; }
-        if (keyCode==GLFW_KEY_F&&shift) { autoFormat(); return; }
-        if (keyCode==GLFW_KEY_EQUAL) { FS=std::min(32.0f,FS+1); return; }
-        if (keyCode==GLFW_KEY_MINUS) { FS=std::max(8.0f,FS-1); return; }
-        if (keyCode==GLFW_KEY_HOME) { curLine=0;curCol=0;scrollTop=0;clearSel(); return; }
-        if (keyCode==GLFW_KEY_END)  { curLine=(int)code.size()-1;curCol=(int)code.back().size();clearSel();ensureVis(); return; }
+        if (keyCode==KEY_D) { pushUndo();code.insert(code.begin()+curLine+1,code[curLine]);curLine++;clamp();ensureVis(); return; }
+        if (keyCode==SLASH_KEY) { pushUndo();auto&ln=code[curLine];if(ln.size()>=2&&ln[0]=='/'&&ln[1]=='/')ln.erase(0,2);else ln="//"+ln; return; }
+        if (keyCode==KEY_F&&shift) { autoFormat(); return; }
+        return;
     }
 
-    // --- Arrow keys / navigation ---
-    auto anchor=[&](){if(shift&&!hasSel()){selLine=curLine;selCol=curCol;}else if(!shift)clearSel();};
-    if      (keyCode==UP)               { anchor(); curLine--; }
-    else if (keyCode==DOWN)             { anchor(); curLine++; }
-    else if (keyCode==LEFT_KEY)         { anchor(); if(curCol>0)curCol--;else if(curLine>0){curLine--;curCol=(int)code[curLine].size();} }
-    else if (keyCode==RIGHT_KEY)        { anchor(); if(curCol<(int)code[curLine].size())curCol++;else if(curLine<(int)code.size()-1){curLine++;curCol=0;} }
-    else if (keyCode==GLFW_KEY_HOME)    { anchor(); curCol=0; }
-    else if (keyCode==GLFW_KEY_END)     { anchor(); curCol=(int)code[curLine].size(); }
-    else if (keyCode==GLFW_KEY_PAGE_UP) { anchor(); curLine-=visLines(); }
-    else if (keyCode==GLFW_KEY_PAGE_DOWN){anchor(); curLine+=visLines(); }
+    // --- Arrow / navigation keys ---
+    {
+        auto doAnchor=[&](){if(shift&&!hasSel()){selLine=curLine;selCol=curCol;}else if(!shift)clearSel();};
+        bool nav=true;
+        if      (keyCode==UP)               { doAnchor(); curLine--; }
+        else if (keyCode==DOWN)             { doAnchor(); curLine++; }
+        else if (keyCode==LEFT)         { doAnchor(); if(curCol>0)curCol--;else if(curLine>0){curLine--;curCol=(int)code[curLine].size();} }
+        else if (keyCode==RIGHT)        { doAnchor(); if(curCol<(int)code[curLine].size())curCol++;else if(curLine<(int)code.size()-1){curLine++;curCol=0;} }
+        else if (keyCode==HOME_KEY)    { doAnchor(); curCol=0; }
+        else if (keyCode==END_KEY)     { doAnchor(); curCol=(int)code[curLine].size(); }
+        else if (keyCode==PAGE_UP) { doAnchor(); curLine-=visLines(); }
+        else if (keyCode==PAGE_DOWN){ doAnchor(); curLine+=visLines(); }
+        else nav=false;
+        if (nav) { clamp(); ensureVis(); return; }
+    }
 
-    // --- Editing keys ---
-    else if (keyCode==ENTER) {
+    // --- ENTER ---
+    if (key==ENTER || key==RETURN) {
         pushUndo(); if(hasSel())deleteSel();
         std::string& cur=code[curLine];
-        std::string before=cur.substr(0,curCol), after=cur.substr(curCol);
-        std::string ind=""; for(char c:cur){if(c==' '||c=='\t')ind+=c;else break;}
+        std::string before=cur.substr(0,curCol);
+        std::string ind="";
+        for (char c:before) if(isspace((unsigned char)c)) ind+=c; else ind="";
         if (!before.empty()&&before.back()=='{') ind+="  ";
+        std::string after=cur.substr(curCol);
         cur=before; code.insert(code.begin()+curLine+1,ind+after);
-        curLine++; curCol=(int)ind.size();
+        curLine++; curCol=(int)ind.size(); clamp(); ensureVis(); return;
     }
-    else if (keyCode==BACKSPACE) {
-        pushUndo(); if(hasSel())deleteSel();
+
+    // --- BACKSPACE ---
+    if (key==BACKSPACE) {
+        pushUndo(); if(hasSel()){deleteSel();}
         else if(curCol>0){code[curLine].erase(curCol-1,1);curCol--;}
         else if(curLine>0){int pl=(int)code[curLine-1].size();code[curLine-1]+=code[curLine];code.erase(code.begin()+curLine);curLine--;curCol=pl;}
+        clamp(); ensureVis(); return;
     }
-    else if (keyCode==DELETE_KEY) {
-        pushUndo(); if(hasSel())deleteSel();
+
+    // --- DELETE ---
+    if (key==DELETE) {
+        pushUndo(); if(hasSel()){deleteSel();}
         else if(curCol<(int)code[curLine].size())code[curLine].erase(curCol,1);
         else if(curLine<(int)code.size()-1){code[curLine]+=code[curLine+1];code.erase(code.begin()+curLine+1);}
+        clamp(); ensureVis(); return;
     }
-    else if (keyCode==TAB) { pushUndo();if(hasSel())deleteSel();code[curLine].insert(curCol,"  ");curCol+=2; }
+
+    // --- TAB ---
+    if (key==TAB) { pushUndo();if(hasSel())deleteSel();code[curLine].insert(curCol,"  ");curCol+=2; }
 
     clamp(); ensureVis();
 }
 
 void keyTyped() {
-    if (showSerial) { if(key>=32&&key<127) serialInput+=key; return; }
     if (fpShow)     { if(key>=32&&key<127) fpInput+=key;     return; }
-    if (vimMode && vimState != VimState::INSERT) {
-        if (vimCmd=="r" && key>=32 && key<127) {
-            pushUndo();
-            if (curCol<(int)code[curLine].size()) code[curLine][curCol]=key;
-            vimCmd="";
-        }
-        return;
-    }
     if (key>=32&&key<127) {
         pushUndo(); if(hasSel())deleteSel();
         code[curLine].insert(curCol,1,key);
         curCol++; clamp(); ensureVis();
     }
 }
-
-void mouseMoved()   {}
-void keyReleased()  {}
-void windowMoved()  {}
-void mouseClicked() {}
-void windowResized() { /* tree populated explicitly via Open button */ }
-
-// =============================================================================
-// WINDOWS EVENT WIRING
-// =============================================================================
-// doWireCallbacks() assigns the IDE's event functions to the _on* function
-// pointers used by Processing::run()'s event loop.
-// It is defined here (at the bottom) so all event functions above are in scope.
-//
-// _registerWire stores a pointer to doWireCallbacks BEFORE main() runs.
-// Processing::run() reads _wireCallbacksFn and calls it after setup() --
-// by which point _wireCallbacksFn is guaranteed to be set.
-//
-// This approach has NO cross-TU static init dependency:
-//   - _wireCallbacksFn is written by _registerWire (IDE.cpp's static)
-//   - _wireCallbacksFn is read by run() (called from main, well after statics)
-// =============================================================================
-
-#ifdef _WIN32
-static void doWireCallbacks() {
-    _onKeyPressed    = keyPressed;
-    _onKeyReleased   = keyReleased;
-    _onKeyTyped      = keyTyped;
-    _onMousePressed  = mousePressed;
-    _onMouseReleased = mouseReleased;
-    _onMouseClicked  = mouseClicked;
-    _onMouseMoved    = mouseMoved;
-    _onMouseDragged  = mouseDragged;
-    _onMouseWheel    = mouseWheel;
-    _onWindowMoved   = windowMoved;
-    _onWindowResized = windowResized;
-}
-
-// This static initializer runs in IDE.cpp's translation unit --
-// no dependency on Processing.cpp's statics. It just stores a function pointer.
-static int _registerWire = ([]{ _wireCallbacksFn = doWireCallbacks; return 0; })();
-#endif
 
 } // namespace Processing

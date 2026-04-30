@@ -1,6 +1,6 @@
 #pragma once
 // =============================================================================
-// Platform.h  --  Simple++ cross-platform abstraction layer
+// Platform.h  --  ProcessingGL cross-platform abstraction layer
 //
 // Wraps OS-specific APIs so the rest of the codebase stays portable.
 // Supported platforms:
@@ -76,7 +76,7 @@ inline void globfree(glob_t*) {}
 #include <shellapi.h>  // ShellExecute
 #include <shlobj.h>    // SHBrowseForFolder, SHGetPathFromIDList
 
-// Undefine Windows macros that clash with Simple++ constant names.
+// Undefine Windows macros that clash with ProcessingGL constant names.
 // windows.h defines many short names (LEFT, RIGHT, RGB, etc.) as macros;
 // we undef them so Processing.h can redeclare them as proper C++ constants.
 #undef DIFFERENCE
@@ -265,12 +265,85 @@ inline void plat_proc_stop(plat_proc_t& p) {
 }
 
 inline bool plat_file_exists(const std::string& path) { struct _stat st; return _stat(path.c_str(),&st)==0; }
+// --------------------------------------------------------------------------
+// Create directory (and parents). Returns true on success or already exists.
+// --------------------------------------------------------------------------
+inline bool plat_mkdir(const std::string& path) {
+    // Create each component
+    std::string p = path;
+    for (char& c : p) if (c=='/') c='\\';
+    // Try creating with nested parents via a simple loop
+    std::string cur;
+    for (size_t i = 0; i <= p.size(); i++) {
+        if (i == p.size() || p[i] == '\\') {
+            if (!cur.empty()) CreateDirectoryA(cur.c_str(), NULL);
+        }
+        if (i < p.size()) cur += p[i];
+    }
+    struct _stat st; return _stat(path.c_str(), &st)==0;
+}
+
+// --------------------------------------------------------------------------
+// Copy a single file. Returns true on success.
+// --------------------------------------------------------------------------
+inline bool plat_copy_file(const std::string& src, const std::string& dst) {
+    return CopyFileA(src.c_str(), dst.c_str(), FALSE) != 0;
+}
+
+// --------------------------------------------------------------------------
+// Copy all files in src_dir into dst_dir (non-recursive).
+// --------------------------------------------------------------------------
+inline void plat_copy_dir(const std::string& src_dir, const std::string& dst_dir) {
+    plat_mkdir(dst_dir);
+    WIN32_FIND_DATAA fd;
+    std::string pattern = src_dir + "\\*";
+    HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        plat_copy_file(src_dir + "\\" + fd.cFileName, dst_dir + "\\" + fd.cFileName);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+// --------------------------------------------------------------------------
+// Get directory part of a path
+// --------------------------------------------------------------------------
+inline std::string plat_dirname(const std::string& p) {
+    size_t a = p.rfind('/'), b = p.rfind('\\');
+    size_t s = (a==std::string::npos) ? b : (b==std::string::npos) ? a : std::max(a,b);
+    return (s==std::string::npos) ? "." : p.substr(0,s);
+}
+
 
 // Build+install command for the library manager (MSYS2 pacman)
 inline std::string plat_build_install_cmd(const std::string& /*pkg*/, const std::string& msysName) {
     return "pacman -S --noconfirm mingw-w64-x86_64-" + msysName;
 }
 inline std::string plat_exe_ext() { return ".exe"; }
+
+// --------------------------------------------------------------------------
+// Native clipboard write (bypasses GLFW, works regardless of window focus)
+// --------------------------------------------------------------------------
+inline void plat_set_clipboard(const std::string& text) {
+    // Try with NULL owner first (works in most cases)
+    // Retry a few times -- clipboard can be locked briefly by another app
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (OpenClipboard(NULL)) break;
+        Sleep(10);
+        if (attempt == 4) return; // give up
+    }
+    EmptyClipboard();
+    // Allocate Unicode (CF_UNICODETEXT) for full compatibility
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, NULL, 0);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, wlen * sizeof(wchar_t));
+    if (!hMem) { CloseClipboard(); return; }
+    wchar_t* dst = (wchar_t*)GlobalLock(hMem);
+    if (dst) { MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, dst, wlen); GlobalUnlock(hMem); }
+    SetClipboardData(CF_UNICODETEXT, hMem);
+    CloseClipboard();
+}
+
 
 #endif // PLAT_WINDOWS
 
@@ -289,6 +362,7 @@ inline std::string plat_exe_ext() { return ".exe"; }
 #include <dirent.h>
 #include <glob.h>
 #include <termios.h>
+#include <fstream>
 #include <errno.h>
 
 inline void plat_sleep_ms(int ms) { usleep(ms * 1000); }
@@ -428,6 +502,69 @@ inline void plat_proc_stop(plat_proc_t& p) {
 }
 
 inline bool plat_file_exists(const std::string& path) { struct stat st; return stat(path.c_str(),&st)==0; }
+// --------------------------------------------------------------------------
+// Create directory (and parents).
+// --------------------------------------------------------------------------
+inline bool plat_mkdir(const std::string& path) {
+    std::string cmd = "mkdir -p \"" + path + "\"";
+    return system(cmd.c_str()) == 0;
+}
+
+// --------------------------------------------------------------------------
+// Copy a single file.
+// --------------------------------------------------------------------------
+inline bool plat_copy_file(const std::string& src, const std::string& dst) {
+    std::ifstream in(src,  std::ios::binary);
+    std::ofstream out(dst, std::ios::binary);
+    if (!in || !out) return false;
+    out << in.rdbuf();
+    return true;
+}
+
+// --------------------------------------------------------------------------
+// Copy all files in src_dir into dst_dir (non-recursive).
+// --------------------------------------------------------------------------
+inline void plat_copy_dir(const std::string& src_dir, const std::string& dst_dir) {
+    plat_mkdir(dst_dir);
+    // Use cp -r via shell with proper quoting (no glob ambiguity)
+    std::string cmd = "cp " + src_dir + "/. " + dst_dir + "/ 2>/dev/null || true";
+    // Actually walk with dirent so we don't rely on shell glob behavior
+    DIR* d = opendir(src_dir.c_str());
+    if (!d) return;
+    struct dirent* ent;
+    while ((ent = readdir(d)) != nullptr) {
+        if (ent->d_name[0] == '.') continue; // skip . and ..
+        std::string src_path = src_dir + "/" + ent->d_name;
+        std::string dst_path = dst_dir + "/" + ent->d_name;
+        struct stat st;
+        if (stat(src_path.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+            plat_copy_file(src_path, dst_path);
+    }
+    closedir(d);
+}
+
+// --------------------------------------------------------------------------
+// Get directory part of a path
+// --------------------------------------------------------------------------
+inline std::string plat_dirname(const std::string& p) {
+    size_t a = p.rfind('/'), b = p.rfind('\\');
+    size_t s = (a==std::string::npos) ? b : (b==std::string::npos) ? a : std::max(a,b);
+    return (s==std::string::npos) ? "." : p.substr(0,s);
+}
+
+// --------------------------------------------------------------------------
+// Native clipboard write (bypasses GLFW)
+// --------------------------------------------------------------------------
+inline void plat_set_clipboard(const std::string& text) {
+    // Try xclip first, fall back to xsel, then wl-copy (Wayland)
+    FILE* p = popen("xclip -selection clipboard 2>/dev/null", "w");
+    if (!p) p = popen("xsel --clipboard --input 2>/dev/null", "w");
+    if (!p) p = popen("wl-copy 2>/dev/null", "w");
+    if (!p) return;
+    fwrite(text.c_str(), 1, text.size(), p);
+    pclose(p);
+}
+
 
 // Build the system package manager install command for a library
 inline std::string plat_build_install_cmd(const std::string& pkg, const std::string& /*msys*/) {

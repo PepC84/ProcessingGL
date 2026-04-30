@@ -474,7 +474,7 @@ static inline int& height = winHeight;
 
 extern float mouseX, mouseY;   // current mouse position (screen coords)
 extern float pmouseX, pmouseY; // previous frame mouse position
-extern bool  isMousePressed;
+extern bool  isMousePressed; // true while any mouse button is held (Processing Java: "mousePressed")
 extern int   mouseButton;      // LEFT, RIGHT, or CENTER
 
 // =============================================================================
@@ -534,8 +534,8 @@ extern void (*_wireCallbacksFn)();
 // KEYBOARD STATE
 // =============================================================================
 
-extern bool isKeyPressed;
-extern int  keyCode; // GLFW key code (e.g. GLFW_KEY_A)
+extern bool  isKeyPressed;   // true while any key is held (Processing Java: "keyPressed")
+extern int  keyCode; // special key code (UP, DOWN, LEFT, RIGHT, ALT, CONTROL, SHIFT, etc.)
 extern char key;     // ASCII character, or CODED (0xFF) for special keys
 
 // =============================================================================
@@ -567,24 +567,53 @@ extern std::vector<unsigned int> pixels;
 // =============================================================================
 
 // Mouse buttons
-static constexpr int LEFT   = 0;
-static constexpr int RIGHT  = 1;
-static constexpr int CENTER = 2;
+// mouseButton is set to LEFT(37), RIGHT(39), or CENTER(3) when a button is pressed
 
-// Key codes (match GLFW so sketches can test keyCode directly)
-static constexpr int UP        = GLFW_KEY_UP;
-static constexpr int DOWN      = GLFW_KEY_DOWN;
-static constexpr int LEFT_KEY  = GLFW_KEY_LEFT;
-static constexpr int RIGHT_KEY = GLFW_KEY_RIGHT;
-static constexpr int ALT       = GLFW_KEY_LEFT_ALT;
-static constexpr int CONTROL   = GLFW_KEY_LEFT_CONTROL;
-static constexpr int SHIFT     = GLFW_KEY_LEFT_SHIFT;
-static constexpr int BACKSPACE = GLFW_KEY_BACKSPACE;
-static constexpr int TAB       = GLFW_KEY_TAB;
-static constexpr int ENTER     = GLFW_KEY_ENTER;
-static constexpr int ESC       = GLFW_KEY_ESCAPE;
-static constexpr int DELETE_KEY= GLFW_KEY_DELETE;
-static constexpr int CODED     = 0xFF; // key is a special (non-ASCII) key
+// ---------------------------------------------------------------------------
+// Processing reference constants
+// Key codes match Java KeyEvent.VK_* values exactly.
+// Mouse button constants match Processing's LEFT/CENTER/RIGHT.
+// ---------------------------------------------------------------------------
+
+// key == CODED when a non-ASCII special key is pressed; then check keyCode
+static constexpr int CODED     = 0xFF;
+
+// Coded keys (keyCode values, Java KeyEvent.VK_*)
+static constexpr int UP        = 38;
+static constexpr int DOWN      = 40;
+static constexpr int LEFT      = 37;    // arrow key AND left mouse button
+static constexpr int RIGHT     = 39;    // arrow key AND right mouse button
+static constexpr int ALT       = 18;
+static constexpr int CONTROL   = 17;
+static constexpr int SHIFT     = 16;
+static constexpr int HOME_KEY  = 36;
+static constexpr int END_KEY   = 35;
+static constexpr int PAGE_UP   = 33;
+static constexpr int PAGE_DOWN = 34;
+static constexpr int F1_KEY    = 112;  static constexpr int F2_KEY  = 113;
+static constexpr int F3_KEY    = 114;  static constexpr int F4_KEY  = 115;
+static constexpr int F5_KEY    = 116;  static constexpr int F6_KEY  = 117;
+static constexpr int F7_KEY    = 118;  static constexpr int F8_KEY  = 119;
+static constexpr int F9_KEY    = 120;  static constexpr int F10_KEY = 121;
+static constexpr int F11_KEY   = 122;  static constexpr int F12_KEY = 123;
+
+// Non-coded keys: use `key` directly (not keyCode) for these
+static constexpr char BACKSPACE = 8;
+static constexpr char TAB       = 9;
+static constexpr char ENTER     = 10;   // PC/Unix enter key
+// Undefine any system macros that might conflict
+#ifdef RETURN
+#  undef RETURN
+#endif
+#ifdef DELETE
+#  undef DELETE
+#endif
+static constexpr int RETURN    = 13;   // Mac return key (same key as ENTER on most systems)
+static constexpr int ESC       = 27;
+static constexpr int DELETE    = 127;
+
+// Mouse buttons (mouseButton variable, Java MouseEvent values)
+static constexpr int CENTER    = 3;     // middle mouse button; also rectMode/ellipseMode CENTER
 
 // Color modes
 static constexpr int RGB = 0;
@@ -594,7 +623,6 @@ static constexpr int HSB = 1;
 static constexpr int CORNER      = 0;
 static constexpr int CORNERS     = 1;
 static constexpr int RADIUS      = 2;
-static constexpr int CENTER_MODE = 3;
 
 // Stroke caps and joins
 static constexpr int ROUND   = 10;
@@ -664,10 +692,10 @@ static constexpr int DISABLE_TEXTURE_MIPMAPS   = -5;
 // Cursor shapes (map to GLFW)
 static constexpr int ARROW       = GLFW_ARROW_CURSOR;
 static constexpr int CROSS       = GLFW_CROSSHAIR_CURSOR;
-static constexpr int HAND        = GLFW_POINTING_HAND_CURSOR;
-static constexpr int MOVE        = GLFW_RESIZE_ALL_CURSOR;
+static constexpr int HAND        = GLFW_HAND_CURSOR;        // GLFW_POINTING_HAND_CURSOR in 3.4+
+static constexpr int MOVE        = GLFW_HRESIZE_CURSOR;     // GLFW_RESIZE_ALL_CURSOR in 3.4+
 static constexpr int TEXT_CURSOR = GLFW_IBEAM_CURSOR;
-static constexpr int WAIT        = GLFW_RESIZE_ALL_CURSOR;
+static constexpr int WAIT        = GLFW_VRESIZE_CURSOR;     // GLFW_RESIZE_ALL_CURSOR in 3.4+
 
 // =============================================================================
 // TIMING  --  inline so they compile anywhere without linking Processing.cpp
@@ -939,6 +967,37 @@ void windowTitle(const std::string& t);
 void windowMove(int x, int y);
 void windowResize(int w, int h);
 void windowResizable(bool r);
+// ---------------------------------------------------------------------------
+// Clipboard, input state, timing, window icon  (IDE-facing helpers)
+// ---------------------------------------------------------------------------
+void        setClipboard(const std::string& s);  // copy text to system clipboard
+std::string getClipboard();                       // paste text from system clipboard
+void        setWindowIcon(PImage* img);           // set the window taskbar icon
+
+bool isCtrlDown();   // true while Ctrl is held
+bool isShiftDown();  // true while Shift is held
+bool isAltDown();    // true while Alt  is held
+
+// Letter key constants -- Java KeyEvent.VK_A=65 .. VK_Z=90
+static constexpr int KEY_A=65; static constexpr int KEY_B=66;
+static constexpr int KEY_C=67; static constexpr int KEY_D=68;
+static constexpr int KEY_E=69; static constexpr int KEY_F=70;
+static constexpr int KEY_G=71; static constexpr int KEY_H=72;
+static constexpr int KEY_I=73; static constexpr int KEY_J=74;
+static constexpr int KEY_K=75; static constexpr int KEY_L=76;
+static constexpr int KEY_M=77; static constexpr int KEY_N=78;
+static constexpr int KEY_O=79; static constexpr int KEY_P=80;
+static constexpr int KEY_Q=81; static constexpr int KEY_R=82;
+static constexpr int KEY_S=83; static constexpr int KEY_T=84;
+static constexpr int KEY_U=85; static constexpr int KEY_V=86;
+static constexpr int KEY_W=87; static constexpr int KEY_X=88;
+static constexpr int KEY_Y=89; static constexpr int KEY_Z=90;
+
+static constexpr int PERIOD_KEY = 46;
+static constexpr int SLASH_KEY  = 47;
+static constexpr int EQUAL_KEY  = 61;
+static constexpr int MINUS_KEY  = 45;
+
 void windowRatio(int w, int h);
 void pixelDensity(int d);
 void smooth();
@@ -985,10 +1044,6 @@ void background(color c);
 void clear();
 
 // int overloads forward to float (avoids ambiguity with color constructors)
-inline void background(int gray)                  { background((float)gray);              }
-inline void background(int gray, int a)           { background((float)gray,(float)a);     }
-inline void background(int r, int g, int b)       { background((float)r,(float)g,(float)b);}
-inline void background(int r, int g, int b, int a){ background((float)r,(float)g,(float)b,(float)a);}
 
 // =============================================================================
 // FILL / STROKE
@@ -1010,15 +1065,96 @@ void strokeCap(int cap);
 void strokeJoin(int join);
 
 // int overloads
-inline void fill(int gray)                   { fill((float)gray);               }
-inline void fill(int gray, int a)            { fill((float)gray,(float)a);      }
-inline void fill(int r, int g, int b)        { fill((float)r,(float)g,(float)b);}
-inline void fill(int r, int g, int b, int a) { fill((float)r,(float)g,(float)b,(float)a);}
-inline void stroke(int gray)                   { stroke((float)gray);               }
-inline void stroke(int gray, int a)            { stroke((float)gray,(float)a);      }
-inline void stroke(int r, int g, int b)        { stroke((float)r,(float)g,(float)b);}
-inline void stroke(int r, int g, int b, int a) { stroke((float)r,(float)g,(float)b,(float)a);}
-inline void strokeWeight(int w)                { strokeWeight((float)w); }
+// ---------------------------------------------------------------------------
+// Mixed-type overloads for fill, stroke, background, tint.
+// These templates accept any arithmetic type (int, float, double, etc.)
+// and forward to the canonical float versions, eliminating all ambiguity
+// from mixed calls like fill(int, int, float) or stroke(float, int, float).
+// ---------------------------------------------------------------------------
+template<typename A, typename B,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void fill(A gray, B a)
+    { fill((float)gray,(float)a); }
+
+template<typename A, typename B, typename C,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>>>
+inline void fill(A r, B g, C b)
+    { fill((float)r,(float)g,(float)b); }
+
+template<typename A, typename B, typename C, typename D,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void fill(A r, B g, C b, D a)
+    { fill((float)r,(float)g,(float)b,(float)a); }
+
+template<typename A,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>>>
+inline void stroke(A gray)
+    { stroke((float)gray); }
+
+template<typename A, typename B,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void stroke(A gray, B a)
+    { stroke((float)gray,(float)a); }
+
+template<typename A, typename B, typename C,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>>>
+inline void stroke(A r, B g, C b)
+    { stroke((float)r,(float)g,(float)b); }
+
+template<typename A, typename B, typename C, typename D,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void stroke(A r, B g, C b, D a)
+    { stroke((float)r,(float)g,(float)b,(float)a); }
+
+template<typename A,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>>>
+inline void strokeWeight(A w)
+    { strokeWeight((float)w); }
+
+template<typename A,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>>>
+inline void fill(A gray)
+    { fill((float)gray); }
+
+template<typename A,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>>>
+inline void background(A gray)
+    { background((float)gray); }
+
+template<typename A, typename B,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void background(A gray, B a)
+    { background((float)gray,(float)a); }
+
+template<typename A, typename B, typename C,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>>>
+inline void background(A r, B g, C b)
+    { background((float)r,(float)g,(float)b); }
+
+template<typename A, typename B, typename C, typename D,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void background(A r, B g, C b, D a)
+    { background((float)r,(float)g,(float)b,(float)a); }
+
+template<typename A,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>>>
+inline void tint(A gray)
+    { tint((float)gray); }
+
+template<typename A, typename B,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void tint(A gray, B a)
+    { tint((float)gray,(float)a); }
+
+template<typename A, typename B, typename C,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>>>
+inline void tint(A r, B g, C b)
+    { tint((float)r,(float)g,(float)b); }
+
+template<typename A, typename B, typename C, typename D,
+         typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void tint(A r, B g, C b, D a)
+    { tint((float)r,(float)g,(float)b,(float)a); }
 
 // =============================================================================
 // SHAPE ATTRIBUTES
@@ -1043,15 +1179,7 @@ void triangle(float x1, float y1, float x2, float y2, float x3, float y3);
 void quad(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4);
 void arc(float cx, float cy, float w, float h, float start, float stop);
 
-// Template overloads catch mixed int/float arguments (common in Processing Java)
-template<typename A,typename B>                             inline void point(A x,B y)                         { point((float)x,(float)y); }
-template<typename A,typename B,typename C,typename D>       inline void line(A x1,B y1,C x2,D y2)             { line((float)x1,(float)y1,(float)x2,(float)y2); }
-template<typename A,typename B,typename C,typename D>       inline void ellipse(A cx,B cy,C w,D h)            { ellipse((float)cx,(float)cy,(float)w,(float)h); }
-template<typename A,typename B,typename C>                  inline void circle(A cx,B cy,C d)                  { circle((float)cx,(float)cy,(float)d); }
-template<typename A,typename B,typename C,typename D>       inline void rect(A x,B y,C w,D h)                 { rect((float)x,(float)y,(float)w,(float)h); }
-template<typename A,typename B,typename C>                  inline void square(A x,B y,C s)                    { square((float)x,(float)y,(float)s); }
-template<typename A,typename B,typename C,typename D,
-         typename E,typename F>                             inline void triangle(A x1,B y1,C x2,D y2,E x3,F y3){ triangle((float)x1,(float)y1,(float)x2,(float)y2,(float)x3,(float)y3); }
+// Mixed-type templates are in the comprehensive block at end of namespace
 
 // =============================================================================
 // 3D PRIMITIVES
@@ -1706,5 +1834,131 @@ public:
 // =============================================================================
 
 inline PVector createVector(float x, float y, float z=0) { return PVector(x, y, z); }
+
+
+// ---------------------------------------------------------------------------
+// Mixed-type templates for geometry and math functions.
+// Handles calls like rect(int,int,float,float), line(float,int,float,int), etc.
+// ---------------------------------------------------------------------------
+#include <type_traits>
+
+// line()
+template<typename A,typename B,typename C,typename D,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void line(A x1,B y1,C x2,D y2){ line((float)x1,(float)y1,(float)x2,(float)y2); }
+template<typename A,typename B,typename C,typename D,typename E,typename F,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&std::is_arithmetic_v<E>&&std::is_arithmetic_v<F>>>
+inline void line(A x1,B y1,C z1,D x2,E y2,F z2){ line((float)x1,(float)y1,(float)z1,(float)x2,(float)y2,(float)z2); }
+
+// rect()
+template<typename A,typename B,typename C,typename D,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void rect(A x,B y,C w,D h2){ rect((float)x,(float)y,(float)w,(float)h2); }
+template<typename A,typename B,typename C,typename D,typename E,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&std::is_arithmetic_v<E>>>
+inline void rect(A x,B y,C w,D h2,E r){ rect((float)x,(float)y,(float)w,(float)h2,(float)r); }
+
+// ellipse() / circle()
+template<typename A,typename B,typename C,typename D,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void ellipse(A x,B y,C w,D h2){ ellipse((float)x,(float)y,(float)w,(float)h2); }
+template<typename A,typename B,typename C,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>>>
+inline void circle(A x,B y,C d){ circle((float)x,(float)y,(float)d); }
+
+// point()
+template<typename A,typename B,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void point(A x,B y){ point((float)x,(float)y); }
+template<typename A,typename B,typename C,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>>>
+inline void point(A x,B y,C z){ point((float)x,(float)y,(float)z); }
+
+// triangle()
+template<typename A,typename B,typename C,typename D,typename E,typename F,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&std::is_arithmetic_v<E>&&std::is_arithmetic_v<F>>>
+inline void triangle(A x1,B y1,C x2,D y2,E x3,F y3){ triangle((float)x1,(float)y1,(float)x2,(float)y2,(float)x3,(float)y3); }
+
+// quad()
+template<typename A,typename B,typename C,typename D,typename E,typename F,typename G,typename H,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&std::is_arithmetic_v<E>&&std::is_arithmetic_v<F>&&std::is_arithmetic_v<G>&&std::is_arithmetic_v<H>>>
+inline void quad(A x1,B y1,C x2,D y2,E x3,F y3,G x4,H y4){ quad((float)x1,(float)y1,(float)x2,(float)y2,(float)x3,(float)y3,(float)x4,(float)y4); }
+
+// arc()
+template<typename A,typename B,typename C,typename D,typename E,typename F,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&std::is_arithmetic_v<E>&&std::is_arithmetic_v<F>>>
+inline void arc(A x,B y,C w,D h2,E start,F stop){ arc((float)x,(float)y,(float)w,(float)h2,(float)start,(float)stop); }
+template<typename A,typename B,typename C,typename D,typename E,typename F,typename G,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&std::is_arithmetic_v<E>&&std::is_arithmetic_v<F>&&std::is_arithmetic_v<G>>>
+inline void arc(A x,B y,C w,D h2,E start,F stop,G mode){ arc((float)x,(float)y,(float)w,(float)h2,(float)start,(float)stop,(int)mode); }
+
+// translate() / rotate() / scale()
+template<typename A,typename B,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void translate(A x,B y){ translate((float)x,(float)y); }
+template<typename A,typename B,typename C,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>>>
+inline void translate(A x,B y,C z){ translate((float)x,(float)y,(float)z); }
+template<typename A,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>>>
+inline void rotate(A a){ rotate((float)a); }
+template<typename A,typename B,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void scale(A s1,B s2){ scale((float)s1,(float)s2); }
+
+// vertex()
+template<typename A,typename B,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void vertex(A x,B y){ vertex((float)x,(float)y); }
+template<typename A,typename B,typename C,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>>>
+inline void vertex(A x,B y,C z){ vertex((float)x,(float)y,(float)z); }
+template<typename A,typename B,typename C,typename D,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void vertex(A x,B y,C u,D v2){ vertex((float)x,(float)y,(float)u,(float)v2); }
+
+// text() position
+template<typename A,typename B,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void text(const std::string& s,A x,B y){ text(s,(float)x,(float)y); }
+template<typename A,typename B,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void text(const char* s,A x,B y){ text(std::string(s),(float)x,(float)y); }
+template<typename V,typename A,typename B,
+    typename=std::enable_if_t<std::is_arithmetic_v<V>&&std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void text(V val,A x,B y){ text((float)val,(float)x,(float)y); }
+
+// map() -- extremely common source of ambiguity
+template<typename V,typename A,typename B,typename C,typename D,
+    typename=std::enable_if_t<std::is_arithmetic_v<V>&&std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline float map(V value,A start1,B stop1,C start2,D stop2){
+    return map((float)value,(float)start1,(float)stop1,(float)start2,(float)stop2);
+}
+
+// constrain()
+template<typename V,typename A,typename B,
+    typename=std::enable_if_t<std::is_arithmetic_v<V>&&std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline float constrain(V val,A lo,B hi){ return constrain((float)val,(float)lo,(float)hi); }
+
+// lerp()
+template<typename A,typename B,typename C,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>>>
+inline float lerp(A a,B b2,C t){ return lerp((float)a,(float)b2,(float)t); }
+
+// dist()
+template<typename A,typename B,typename C,typename D,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline float dist(A x1,B y1,C x2,D y2){ return dist((float)x1,(float)y1,(float)x2,(float)y2); }
+template<typename A,typename B,typename C,typename D,typename E,typename F,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&std::is_arithmetic_v<E>&&std::is_arithmetic_v<F>>>
+inline float dist(A x1,B y1,C z1,D x2,E y2,F z2){ return dist((float)x1,(float)y1,(float)z1,(float)x2,(float)y2,(float)z2); }
+
+// image()
+template<typename A,typename B,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void image(PImage* img,A x,B y){ image(img,(float)x,(float)y); }
+template<typename A,typename B,typename C,typename D,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void image(PImage* img,A x,B y,C w,D h2){ image(img,(float)x,(float)y,(float)w,(float)h2); }
 
 } // namespace Processing

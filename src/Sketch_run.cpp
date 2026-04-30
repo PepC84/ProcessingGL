@@ -1,55 +1,47 @@
 #include "Processing.h"
 namespace Processing {
-// =============================================================================
-// PerspectiveOrtho.cpp  --  ProcessingGL sketch
-//
-// Translated from "Perspective vs. Ortho" by the Processing Foundation.
-// Move the mouse left/right to change the far clipping distance.
-// Click to toggle between perspective and orthographic projection.
-//
-// NOTE: The IDE auto-translates Java keywords when building:
-//   boolean -> bool     float(x) -> (float)(x)     null -> nullptr
-// So the sketch below matches the original Java source exactly.
-// =============================================================================
-
-#include "Processing.h"
-
-
-
-bool showPerspective = false;
 
 void setup() {
-    size(640, 360, P3D);
+    /**
+     * Color Variables (Homage to Albers). 
+     * 
+     * This example creates variables for colors that may be referred to 
+     * in the program by a name, rather than a number. 
+     */
+    
+    size(640, 360);
     noStroke();
-    fill(255);
+    background(51, 0, 0);
+    
+    color inside = color(204, 102, 0);
+    color middle = color(204, 153, 0);
+    color outside = color(153, 51, 0);
+    
+    // These statements are equivalent to the statements above.
+    // Programmers may use the format they prefer.
+    //color inside = #CC6600;
+    //color middle = #CC9900;
+    //color outside = #993300;
+    
+    pushMatrix();
+    translate(80, 80);
+    fill(outside);
+    rect(0, 0, 200, 200);
+    fill(middle);
+    rect(40, 60, 120, 120);
+    fill(inside);
+    rect(60, 90, 80, 80);
+    popMatrix();
+    
+    pushMatrix();
+    translate(360, 80);
+    fill(inside);
+    rect(0, 0, 200, 200);
+    fill(outside);
+    rect(40, 60, 120, 120);
+    fill(middle);
+    rect(60, 90, 80, 80);
+    popMatrix();
 }
-
-void draw() {
-    lights();
-    background(0);
-
-    // Map mouseX to the far clipping plane distance
-    float far = map((float)mouseX, 0, (float)width, 120, 400);
-
-    if (showPerspective) {
-        // Perspective: PI/3 (~60 deg) FOV, standard aspect, near=10, far=mapped
-        perspective(PI / 3.0f, (float)width / (float)height, 10, far);
-    } else {
-        // Orthographic: centred on origin, same near/far
-        ortho(-width / 2.0f, width / 2.0f,
-              -height / 2.0f, height / 2.0f,
-               10, far);
-    }
-
-    translate(width / 2.0f, height / 2.0f, 0);
-    rotateX(-PI / 6.0f);
-    rotateY( PI / 3.0f);
-    box(180);
-}
-
-void mousePressed() {
-    showPerspective = !showPerspective;
-}
-
-// namespace Processing
+void draw() {}
 } // namespace Processing
