@@ -312,12 +312,18 @@ class PImage {
 public:
     int  width  = 0;
     int  height = 0;
-    std::vector<unsigned int> pixels; // packed ARGB, one per pixel
+    std::vector<unsigned int> pixels;
     GLuint texID = 0;
-    bool   dirty = false; // true when pixels changed but texture not yet updated
+    bool   dirty = false;
 
     PImage() = default;
-    PImage(int w, int h) : width(w), height(h), pixels(w*h, 0xFF000000) {}
+    PImage(int w, int h) {
+        // Guard against bad dimensions from corrupted files or failed loads
+        if (w > 0 && h > 0 && w < 16384 && h < 16384) {
+            width = w; height = h;
+            pixels.assign((size_t)w * h, 0xFF000000);
+        }
+    }
 
     // Pixel read/write (bounds-checked)
     unsigned int get(int x, int y) const {
@@ -336,7 +342,10 @@ public:
 
     // Upload CPU pixels to the GPU texture
     void uploadTexture() {
-        std::vector<unsigned char> rgba(width*height*4);
+        if (width <= 0 || height <= 0 || pixels.empty()) return;
+        if ((int)pixels.size() < width * height) return;
+        glFlush(); // flush pending GL ops before texture upload
+        std::vector<unsigned char> rgba((size_t)width * height * 4);
         for (int i = 0; i < width*height; i++) {
             unsigned int p = pixels[i];
             rgba[i*4+0] = (p>>16)&0xFF; // R
@@ -394,11 +403,12 @@ public:
         }
         dirty = true;
     }
+    void mask(const PImage* m) { if (m) mask(*m); }
 
     // Destructor frees GPU texture
     ~PImage() { if (texID) glDeleteTextures(1, &texID); }
 
-    // Non-copyable (owns GPU resource)
+    // Non-copyable (owns GPU resource -- use PImage* for assignment)
     PImage(const PImage&)            = delete;
     PImage& operator=(const PImage&) = delete;
 
@@ -465,8 +475,10 @@ extern int  pixelDensityValue;
 extern bool isResizable, focused;
 
 // Aliases: 'width' and 'height' are the canonical Processing names
-static inline int& width  = winWidth;
-static inline int& height = winHeight;
+extern int logicalW, logicalH; // sketch's requested size from size()
+// width/height always equal what size() set -- never corrupted by WM tile resize.
+static inline int& width  = logicalW;
+static inline int& height = logicalH;
 
 // =============================================================================
 // MOUSE STATE
@@ -517,6 +529,7 @@ extern std::function<void()>    _onWindowResized;
 // Processing::run() calls it (if non-null) after setup() to wire all _on* ptrs.
 // ---------------------------------------------------------------------------
 extern void (*_wireCallbacksFn)(); // set before run() to wire event callbacks
+extern void (*_staticSketchSetup)(); // set by static sketches for i3/tiling WM redraw
 
 // =============================================================================
 // KEYBOARD STATE
@@ -604,8 +617,9 @@ static constexpr int DELETE    = 127;
 static constexpr int CENTER    = 3;     // middle mouse button; also rectMode/ellipseMode CENTER
 
 // Color modes
-static constexpr int RGB = 0;
-static constexpr int HSB = 1;
+static constexpr int RGB  = 1;
+static constexpr int HSB  = 2;
+#define ARGB 3  /* createImage(w,h,ARGB) */
 
 // Shape / rect / ellipse modes
 static constexpr int CORNER      = 0;
@@ -791,7 +805,7 @@ struct color {
     unsigned int value;
 
     color() : value(0xFF000000) {}         // default: opaque black
-    explicit color(unsigned int v) : value(v) {}
+    color(unsigned int v) : value(v) {}  // allows color pix = img->get(x,y)
 
     // These constructors call makeColor() which applies colorMode.
     // Defined in Processing.cpp so the colorMode globals are accessible.
@@ -799,6 +813,7 @@ struct color {
     color(int gray, int a);
     color(int r, int g, int b);
     color(int r, int g, int b, int a);
+    // Use explicit cast: color(0,153,204,(int)a) or color(0.f,153.f,204.f,a)
     color(float gray);
     color(float gray, float a);
     color(float r, float g, float b);
@@ -806,6 +821,11 @@ struct color {
 
     explicit operator unsigned int() const { return value; }
     unsigned int toInt() const { return value; }
+    // In Processing Java, color IS int. Allow implicit color<->int conversion
+    // so sketches can write: int c = color(255); int c = lerpColor(a,b,t);
+    operator int() const { return (int)value; }
+    // fromRaw: convert raw int (Java color int) directly to color value
+    static color fromRaw(int v) { color c; c.value=(unsigned int)v; return c; }
     bool operator==(const color& o) const { return value == o.value; }
     bool operator!=(const color& o) const { return value != o.value; }
 };
@@ -1028,6 +1048,8 @@ void colorMode(int mode, float mH, float mS, float mB, float mA=255.f);
 // =============================================================================
 
 void background(float gray, float a=255.f);
+void background(const PImage& img);   // draw image as background
+inline void background(const PImage* img){ if(img) background(*img); }
 void background(float r, float g, float b, float a=255.f);
 void background(color c);
 void clear();
@@ -1041,6 +1063,8 @@ void clear();
 void fill(float gray, float a=255.f);
 void fill(float r, float g, float b, float a=255.f);
 void fill(color c);
+void fill(color c, float a);  // fill with color + override alpha
+inline void fill(color c, int a) { fill(c, (float)a); }
 void fill(const PColor& c);
 void noFill();
 
@@ -1277,6 +1301,7 @@ void shininess(float s);
 // =============================================================================
 
 void text(const std::string& msg, float x, float y);
+void text(const std::string& msg, float x, float y, float w, float h); // word-wrapped bounding box
 void text(int val,   float x, float y);
 void text(float val, float x, float y);
 void textSize(float size);
@@ -1292,7 +1317,7 @@ float textDescent();
 // =============================================================================
 
 PImage*    loadImage(const std::string& path);
-PImage     createImage(int w, int h);
+PImage* createImage(int w, int h, int mode=1);
 PGraphics* createGraphics(int w, int h);
 void       image(PImage& img, float x, float y);
 void       image(PImage& img, float x, float y, float w, float h);
@@ -1913,7 +1938,14 @@ inline void text(const std::string& s,A x,B y){ text(s,(float)x,(float)y); }
 template<typename A,typename B,
     typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
 inline void text(const char* s,A x,B y){ text(std::string(s),(float)x,(float)y); }
-template<typename V,typename A,typename B,
+
+// text with bounding box -- mixed arithmetic types
+template<typename A,typename B,typename C,typename D,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void text(const std::string& s,A x,B y,C w,D h2){ text(s,(float)x,(float)y,(float)w,(float)h2); }
+template<typename A,typename B,typename C,typename D,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void text(const char* s,A x,B y,C w,D h2){ text(std::string(s),(float)x,(float)y,(float)w,(float)h2); }template<typename V,typename A,typename B,
     typename=std::enable_if_t<std::is_arithmetic_v<V>&&std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
 inline void text(V val,A x,B y){ text((float)val,(float)x,(float)y); }
 
@@ -1934,6 +1966,46 @@ template<typename A,typename B,typename C,
     typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>>>
 inline float lerp(A a,B b2,C t){ return lerp((float)a,(float)b2,(float)t); }
 
+// bezier() -- 8 arithmetic params
+template<typename A,typename B,typename C,typename D,
+         typename E,typename F,typename G,typename H,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&
+                               std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&
+                               std::is_arithmetic_v<E>&&std::is_arithmetic_v<F>&&
+                               std::is_arithmetic_v<G>&&std::is_arithmetic_v<H>>>
+inline void bezier(A x1,B y1,C cx1,D cy1,E cx2,F cy2,G x2,H y2){
+    bezier((float)x1,(float)y1,(float)cx1,(float)cy1,
+           (float)cx2,(float)cy2,(float)x2,(float)y2);
+}
+
+// bezierPoint / bezierTangent / curvePoint / curveTangent -- mixed types
+template<typename A,typename B,typename C,typename D,typename T,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&
+                               std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&
+                               std::is_arithmetic_v<T>>>
+inline float bezierPoint(A a,B b,C c,D d,T t){
+    return bezierPoint((float)a,(float)b,(float)c,(float)d,(float)t);
+}
+template<typename A,typename B,typename C,typename D,typename T,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&
+                               std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&
+                               std::is_arithmetic_v<T>>>
+inline float bezierTangent(A a,B b,C c,D d,T t){
+    return bezierTangent((float)a,(float)b,(float)c,(float)d,(float)t);
+}
+
+// curve() -- 8 params
+template<typename A,typename B,typename C,typename D,
+         typename E,typename F,typename G,typename H,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&
+                               std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&
+                               std::is_arithmetic_v<E>&&std::is_arithmetic_v<F>&&
+                               std::is_arithmetic_v<G>&&std::is_arithmetic_v<H>>>
+inline void curve(A x0,B y0,C x1,D y1,E x2,F y2,G x3,H y3){
+    curve((float)x0,(float)y0,(float)x1,(float)y1,
+          (float)x2,(float)y2,(float)x3,(float)y3);
+}
+
 // dist()
 template<typename A,typename B,typename C,typename D,
     typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
@@ -1942,12 +2014,21 @@ template<typename A,typename B,typename C,typename D,typename E,typename F,
     typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>&&std::is_arithmetic_v<E>&&std::is_arithmetic_v<F>>>
 inline float dist(A x1,B y1,C z1,D x2,E y2,F z2){ return dist((float)x1,(float)y1,(float)z1,(float)x2,(float)y2,(float)z2); }
 
-// image()
+// image() -- mixed types, value and pointer variants
 template<typename A,typename B,
     typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
-inline void image(PImage* img,A x,B y){ image(img,(float)x,(float)y); }
+inline void image(const PImage& img,A x,B y){ image(img,(float)x,(float)y); }
 template<typename A,typename B,typename C,typename D,
     typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
-inline void image(PImage* img,A x,B y,C w,D h2){ image(img,(float)x,(float)y,(float)w,(float)h2); }
+inline void image(const PImage& img,A x,B y,C w,D h2){ image(img,(float)x,(float)y,(float)w,(float)h2); }
+template<typename A,typename B,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>>>
+inline void image(const PImage* img,A x,B y){
+    fprintf(stderr,"[image*] img=%p valid=%d\n",(void*)img,img?(int)img->width:0); fflush(stderr);
+    if(img) image(*img,(float)x,(float)y);
+}
+template<typename A,typename B,typename C,typename D,
+    typename=std::enable_if_t<std::is_arithmetic_v<A>&&std::is_arithmetic_v<B>&&std::is_arithmetic_v<C>&&std::is_arithmetic_v<D>>>
+inline void image(const PImage* img,A x,B y,C w,D h2){ if(img) image(*img,(float)x,(float)y,(float)w,(float)h2); }
 
 } // namespace Processing

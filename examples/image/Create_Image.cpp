@@ -1,5 +1,3 @@
-#include "Processing.h"
-namespace Processing {
 /**
  * Create Image. 
  * 
@@ -18,7 +16,7 @@ void setup() {
 
     for (int i = 0; i < total; i++) {
         float a = map(i, 0, total, 255, 0);
-        img->pixels[i] = color(0,153,204,(int)(a));
+        img->pixels[i] = color(0, 153, 204, a);
     }
 }
 
@@ -31,8 +29,3 @@ void draw() {
           mouseX - img->width / 2,
           mouseY - img->height / 2);
 }
-
-static void _sketchWire() {
-}
-static int _autoWire = []{ _wireCallbacksFn = _sketchWire; return 0; }();
-} // namespace Processing

@@ -119,53 +119,6 @@ elif [ -f "files/logo.jpg" ]; then
     ok "files/logo.jpg already present"
 fi
 
-# Create vim_binds.txt in files/ if missing
-if [ ! -f "files/vim_binds.txt" ]; then
-    cat > files/vim_binds.txt << 'VIMBINDS'
-// ProcessingGL Vim Key Bindings
-// Edit this file to add your own notes and reminders.
-// Changes are loaded automatically when the IDE starts.
-
-// --- Normal mode motions ---
-h / l         left / right
-j / k         down / up
-w / b         next / previous word
-0 / $         start / end of line
-^             first non-blank character
-gg / G        first / last line
-Ctrl+d/u      half page down / up
-
-// --- Insert mode ---
-i / a         insert before / after cursor
-I / A         insert at start / end of line
-o / O         open line below / above
-Esc           return to Normal
-
-// --- Editing ---
-x / X         delete char under / before cursor
-dd            delete line
-yy / Y        yank line
-p / P         paste below / above
-u             undo
-Ctrl+r        redo
->> / <<       indent / de-indent
-r<c>          replace character
-
-// --- Visual mode ---
-v / V         character / line visual
-d / y / c     delete / yank / change selection
-
-// --- IDE shortcuts ---
-Ctrl+b        build
-Ctrl+r        run
-Ctrl+s        save
-Ctrl+o        open
-Ctrl+Shift+v  toggle vim mode
-VIMBINDS
-    ok "files/vim_binds.txt created"
-else
-    ok "files/vim_binds.txt already present"
-fi
 
 # Copy sample sketches into files/ if they exist at root
 for SAMPLE in Geometry.cpp Mixture.cpp Mandelbrot.cpp StoringInput.cpp; do

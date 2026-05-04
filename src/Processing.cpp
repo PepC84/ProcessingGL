@@ -13,9 +13,12 @@
 #include <functional>
 #include <memory>
 
-// Uncomment + drop stb_image.h next to this file to enable loadImage():
-// #define STB_IMAGE_IMPLEMENTATION
-// #include "stb_image.h"
+// stb_image.h must be in the src/ folder for loadImage() to work.
+// Download from: https://github.com/nothings/stb/blob/master/stb_image.h
+#ifdef PROCESSING_HAS_STB_IMAGE
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#endif
 
 // Uncomment + drop stb_image_write.h to enable saveFrame()/save():
 // #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -38,12 +41,15 @@ namespace Processing {
 // =============================================================================
 
 int   winWidth=640,winHeight=480; // sensible default; size() overrides this
+int logicalW=640,logicalH=480; // sketch's requested size -- never changed by WM
+static int fbW=640, fbH=480;    // actual framebuffer size (may be 2x on HiDPI)
 int   displayWidth=0,displayHeight=0;
 int   pixelWidth=0,pixelHeight=0;
 int   pixelDensityValue=1;
 bool  isResizable=false,focused=false;
 
 float mouseX=0,mouseY=0,pmouseX=0,pmouseY=0;
+bool  mouseInWindow=false; // true after cursor first enters the sketch window
 bool  _mousePressed=false;
 int   mouseButton=-1;
 bool  _keyPressed=false;
@@ -86,6 +92,7 @@ std::function<void()>    _onWindowResized;
 // of Processing.cpp completes. Raw function pointers are POD -- zero-initialized
 // at program start before ANY constructor runs, so this is always safe to write.
 void (*_wireCallbacksFn)() = nullptr;
+void (*_staticSketchSetup)() = nullptr; // set by static sketches for i3 redraw
 
 static GLFWwindow* gWindow=nullptr;
 static bool is3DMode=false;
@@ -106,11 +113,14 @@ static std::vector<std::pair<float,float>> contourVerts;
 
 // Style stack
 struct Style {
-    float fillR,fillG,fillB,fillA,strokeR,strokeG,strokeB,strokeA,strokeW;
-    bool  doFill,doStroke;
-    int   rectMode,ellipseMode,imageMode;
-    float tintR,tintG,tintB,tintA;bool doTint;
-    int   colorMode;float cmH,cmS,cmB,cmA;
+    float fillR, fillG, fillB, fillA;
+    float strokeR, strokeG, strokeB, strokeA, strokeW;
+    bool  doFill, doStroke;
+    int   rectMode, ellipseMode, imageMode;
+    float tintR, tintG, tintB, tintA;
+    bool  doTint;
+    int   colorMode;
+    float cmH, cmS, cmB, cmA;
 };
 static std::vector<Style> styleStack;
 
@@ -124,9 +134,12 @@ static int   noisePerm[512];
 
 static void buildNoisePerm(int seed){
     srand(seed);
-    for(int i=0;i<256;i++)noisePerm[i]=i;
-    for(int i=255;i>0;i--){int j=rand()%(i+1);std::swap(noisePerm[i],noisePerm[j]);}
-    for(int i=0;i<256;i++)noisePerm[256+i]=noisePerm[i];
+    for (int i = 0; i < 256; i++) noisePerm[i] = i;
+    for (int i = 255; i > 0; i--) {
+        int j = rand() % (i + 1);
+        std::swap(noisePerm[i], noisePerm[j]);
+    }
+    for (int i = 0; i < 256; i++) noisePerm[256 + i] = noisePerm[i];
 }
 void noiseSeed(int s){buildNoisePerm(s);}
 void noiseDetail(int o,float f){noiseOctaves=o;noiseFalloff=f;}
@@ -150,9 +163,14 @@ static float perlin3(float x,float y,float z){
                 nlerp(u,grad(noisePerm[AB+1],x,y-1,z-1),grad(noisePerm[BB+1],x-1,y-1,z-1))));
 }
 static float noiseOctaved(float x,float y,float z){
-    float result=0,amp=0.5f,freq=1,mx=0;
-    for(int i=0;i<noiseOctaves;i++){result+=amp*(perlin3(x*freq,y*freq,z*freq)*0.5f+0.5f);mx+=amp;amp*=noiseFalloff;freq*=2;}
-    return result/mx;
+    float result = 0, amp = 0.5f, freq = 1, mx = 0;
+    for (int i = 0; i < noiseOctaves; i++) {
+        result += amp * (perlin3(x * freq, y * freq, z * freq) * 0.5f + 0.5f);
+        mx  += amp;
+        amp *= noiseFalloff;
+        freq *= 2;
+    }
+    return result / mx;
 }
 float noise(float x)             {return noiseOctaved(x,0,0);}
 float noise(float x,float y)     {return noiseOctaved(x,y,0);}
@@ -176,9 +194,12 @@ static void hsbToRgb(float h,float s,float b,float& r,float& g,float& bl){
     float hh=h*6;int i=(int)hh;float f=hh-i;
     float p=b*(1-s),q=b*(1-s*f),t2=b*(1-s*(1-f));
     switch(i%6){
-        case 0:r=b;g=t2;bl=p;break;case 1:r=q;g=b;bl=p;break;
-        case 2:r=p;g=b;bl=t2;break;case 3:r=p;g=q;bl=b;break;
-        case 4:r=t2;g=p;bl=b;break;default:r=b;g=p;bl=q;break;
+        case 0: r=b;  g=t2; bl=p;  break;
+        case 1: r=q;  g=b;  bl=p;  break;
+        case 2: r=p;  g=b;  bl=t2; break;
+        case 3: r=p;  g=q;  bl=b;  break;
+        case 4: r=t2; g=p;  bl=b;  break;
+        default:r=b;  g=p;  bl=q;  break;
     }
 }
 
@@ -202,16 +223,28 @@ color::color(float gray, float a)   { value = makeColor(gray, a).value; }
 color::color(float r,float g,float b){ value = makeColor(r,g,b,colorMaxA).value; }
 color::color(float r,float g,float b,float a){ value = makeColor(r,g,b,a).value; }
 
-void colorMode(int mode,float mx){colorModeVal=mode;colorMaxH=colorMaxS=colorMaxB=colorMaxA=mx;}
-void colorMode(int mode,float mH,float mS,float mB,float mA){colorModeVal=mode;colorMaxH=mH;colorMaxS=mS;colorMaxB=mB;colorMaxA=mA;}
+void colorMode(int mode, float mx) { colorModeVal=mode; colorMaxH=colorMaxS=colorMaxB=colorMaxA=mx; }
+void colorMode(int mode, float mH, float mS, float mB, float mA) { colorModeVal=mode; colorMaxH=mH; colorMaxS=mS; colorMaxB=mB; colorMaxA=mA; }
 
 // Color channel accessors -- scaled to current colorMode range
-float red(color c)       {unsigned int v=c.value;return (v>>16&0xFF)/255.0f*colorMaxH;}
-float green(color c)     {unsigned int v=c.value;return (v>>8&0xFF)/255.0f*colorMaxS;}
-float blue(color c)      {unsigned int v=c.value;return (v&0xFF)/255.0f*colorMaxB;}
-float alpha(color c)     {unsigned int v=c.value;return (v>>24&0xFF)/255.0f*colorMaxA;}
-float brightness(color c){unsigned int v=c.value;float r=(v>>16&0xFF)/255.f,g=(v>>8&0xFF)/255.f,b=(v&0xFF)/255.f;return max(r,max(g,b))*colorMaxB;}
-float saturation(color c){unsigned int v=c.value;float r=(v>>16&0xFF)/255.f,g=(v>>8&0xFF)/255.f,b=(v&0xFF)/255.f;float mx=max(r,max(g,b)),mn=min(r,min(g,b));return(mx==0?0:(mx-mn)/mx)*colorMaxS;}
+float red(color c)       { unsigned int v=c.value; return (v>>16&0xFF)/255.0f*colorMaxH; }
+float green(color c)     { unsigned int v=c.value; return (v>>8&0xFF)/255.0f*colorMaxS; }
+float blue(color c)      { unsigned int v=c.value; return (v&0xFF)/255.0f*colorMaxB; }
+float alpha(color c)     { unsigned int v=c.value; return (v>>24&0xFF)/255.0f*colorMaxA; }
+float brightness(color c) {
+    unsigned int v=c.value;
+    float r=(v>>16&0xFF)/255.f, g=(v>>8&0xFF)/255.f, b=(v&0xFF)/255.f;
+    return max(r, max(g, b)) * colorMaxB;
+}
+float saturation(color c) {
+    unsigned int v = c.value;
+    float r  = (v >> 16 & 0xFF) / 255.f;
+    float g  = (v >>  8 & 0xFF) / 255.f;
+    float b  = (v       & 0xFF) / 255.f;
+    float mx = max(r, max(g, b));
+    float mn = min(r, min(g, b));
+    return (mx == 0 ? 0 : (mx - mn) / mx) * colorMaxS;
+}
 float hue(color c){
     unsigned int v=c.value;
     float r=(v>>16&0xFF)/255.f,g=(v>>8&0xFF)/255.f,b=(v&0xFF)/255.f;
@@ -259,14 +292,18 @@ static void restoreLighting() {
 }
 
 static void setProjection(int,int){
-    // Use logical window size for both viewport and ortho so sketch
-    // pixel coordinates map 1:1 across all DPI settings.
-    glViewport(0, 0, winWidth, winHeight);
+    // Viewport = actual framebuffer size (handles HiDPI where fb > logical).
+    // Ortho = logical sketch size (coordinates always match what size() set).
+    if (gWindow) {
+        int fw=logicalW, fh=logicalH;
+        glfwGetFramebufferSize(gWindow, &fw, &fh);
+        if (fw > 0) fbW = fw;
+        if (fh > 0) fbH = fh;
+    }
+    glViewport(0, 0, fbW, fbH);
     glMatrixMode(GL_PROJECTION);glLoadIdentity();
-    glOrtho(0, winWidth, winHeight, 0, -1, 1);
+    glOrtho(0, logicalW, logicalH, 0, -1, 1);
     glMatrixMode(GL_MODELVIEW);glLoadIdentity();
-    // In 2D mode, disable depth testing so overlapping shapes draw correctly.
-    // Without this, rect() calls at z=0 fail GL_LESS depth test against each other.
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_LIGHTING);
 }
@@ -320,17 +357,33 @@ static void resolveEllipse(float& cx,float& cy,float& rx,float& ry){
     else if(currentEllipseMode==CORNERS){float ex=rx,ey=ry;rx=(ex-cx)*0.5f;ry=(ey-cy)*0.5f;cx=(cx+ex)*0.5f;cy=(cy+ey)*0.5f;}
     else if(currentEllipseMode==CENTER){rx*=0.5f;ry*=0.5f;}
 }
-static void setFillFromColor(color c){unsigned int v=c.value;fillR=(v>>16&0xFF)/255.f;fillG=(v>>8&0xFF)/255.f;fillB=(v&0xFF)/255.f;fillA=(v>>24&0xFF)/255.f;doFill=true;}
-static void setStrokeFromColor(color c){unsigned int v=c.value;strokeR=(v>>16&0xFF)/255.f;strokeG=(v>>8&0xFF)/255.f;strokeB=(v&0xFF)/255.f;strokeA=(v>>24&0xFF)/255.f;doStroke=true;}
+static void setFillFromColor(color c) {
+    unsigned int v = c.value;
+    fillR = (v >> 16 & 0xFF) / 255.f;
+    fillG = (v >>  8 & 0xFF) / 255.f;
+    fillB = (v       & 0xFF) / 255.f;
+    fillA = (v >> 24 & 0xFF) / 255.f;
+    doFill = true;
+}
+static void setStrokeFromColor(color c) {
+    unsigned int v = c.value;
+    strokeR = (v >> 16 & 0xFF) / 255.f;
+    strokeG = (v >>  8 & 0xFF) / 255.f;
+    strokeB = (v       & 0xFF) / 255.f;
+    strokeA = (v >> 24 & 0xFF) / 255.f;
+    doStroke = true;
+}
 
 // =============================================================================
 // ENVIRONMENT
 // =============================================================================
 
 static bool defaultP3D = false;
+static void applyDefaultCamera(); // forward decl for use in size()
 
 void size(int w,int h){
     winWidth=w;winHeight=h;
+    logicalW=w;logicalH=h;  // remember what the sketch requested
     pixelWidth=w;pixelHeight=h;
     if(gWindow){
         glfwSetWindowSize(gWindow,w,h);
@@ -362,16 +415,41 @@ void size(int w,int h){
             usleep(1000);
             #endif
         }
+        // Force coordinate system to requested size regardless of WM.
+        // logicalW/H are the sketch's coordinate space; viewport uses actual size.
+        logicalW = w; logicalH = h;
+        winWidth = w; winHeight = h;
         setProjection(w,h);
-        // Just set up the projection -- don't clear buffers here.
-        // The sketch's background() call clears when needed.
     }
 }
 void size(int w,int h,int renderer){
     defaultP3D=(renderer==P3D);
     size(w,h);
+    // For P3D mode: set up depth test and apply default camera/perspective
+    // immediately so setup() draws with the correct projection.
+    if(defaultP3D && gWindow){
+        {int fw=logicalW,fh=logicalH;if(gWindow)glfwGetFramebufferSize(gWindow,&fw,&fh);if(fw>0)fbW=fw;if(fh>0)fbH=fh;}
+        glViewport(0,0,fbW,fbH);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_CULL_FACE);
+        glFrontFace(GL_CW);
+        glEnable(GL_NORMALIZE);
+        glClearColor(0,0,0,1); // default black before background() is called
+        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+        applyDefaultCamera();
+    }
 }
-void fullScreen(){if(!gWindow){winWidth=displayWidth;winHeight=displayHeight;}else{GLFWmonitor* m=glfwGetPrimaryMonitor();const GLFWvidmode* v=glfwGetVideoMode(m);glfwSetWindowMonitor(gWindow,m,0,0,v->width,v->height,v->refreshRate);}}
+void fullScreen() {
+    if (!gWindow) {
+        winWidth = displayWidth;
+        winHeight = displayHeight;
+    } else {
+        GLFWmonitor* m = glfwGetPrimaryMonitor();
+        const GLFWvidmode* v = glfwGetVideoMode(m);
+        glfwSetWindowMonitor(gWindow, m, 0, 0, v->width, v->height, v->refreshRate);
+    }
+}
 void frameRate(int fps){currentFrameRate=fps;targetFrameTime=1.0/fps;}
 void settings(){}
 void noLoop(){looping=false;}
@@ -465,8 +543,27 @@ void noCursor()     {if(gWindow)glfwSetInputMode(gWindow,GLFW_CURSOR,GLFW_CURSOR
 // STYLE STACK
 // =============================================================================
 
-static void captureStyle(Style& s){s={fillR,fillG,fillB,fillA,strokeR,strokeG,strokeB,strokeA,strokeW,doFill,doStroke,currentRectMode,currentEllipseMode,currentImageMode,tintR,tintG,tintB,tintA,doTint,colorModeVal,colorMaxH,colorMaxS,colorMaxB,colorMaxA};}
-static void restoreStyle(const Style& s){fillR=s.fillR;fillG=s.fillG;fillB=s.fillB;fillA=s.fillA;strokeR=s.strokeR;strokeG=s.strokeG;strokeB=s.strokeB;strokeA=s.strokeA;strokeW=s.strokeW;doFill=s.doFill;doStroke=s.doStroke;currentRectMode=s.rectMode;currentEllipseMode=s.ellipseMode;currentImageMode=s.imageMode;tintR=s.tintR;tintG=s.tintG;tintB=s.tintB;tintA=s.tintA;doTint=s.doTint;colorModeVal=s.colorMode;colorMaxH=s.cmH;colorMaxS=s.cmS;colorMaxB=s.cmB;colorMaxA=s.cmA;}
+static void captureStyle(Style& s) {
+    s = { fillR, fillG, fillB, fillA,
+          strokeR, strokeG, strokeB, strokeA, strokeW,
+          doFill, doStroke,
+          currentRectMode, currentEllipseMode, currentImageMode,
+          tintR, tintG, tintB, tintA, doTint,
+          colorModeVal, colorMaxH, colorMaxS, colorMaxB, colorMaxA };
+}
+static void restoreStyle(const Style& s) {
+    fillR = s.fillR; fillG = s.fillG; fillB = s.fillB; fillA = s.fillA;
+    strokeR = s.strokeR; strokeG = s.strokeG; strokeB = s.strokeB;
+    strokeA = s.strokeA; strokeW = s.strokeW;
+    doFill = s.doFill; doStroke = s.doStroke;
+    currentRectMode   = s.rectMode;
+    currentEllipseMode = s.ellipseMode;
+    currentImageMode  = s.imageMode;
+    tintR = s.tintR; tintG = s.tintG; tintB = s.tintB; tintA = s.tintA;
+    doTint = s.doTint;
+    colorModeVal = s.colorMode;
+    colorMaxH = s.cmH; colorMaxS = s.cmS; colorMaxB = s.cmB; colorMaxA = s.cmA;
+}
 void pushStyle(){Style s;captureStyle(s);styleStack.push_back(s);}
 void popStyle() {if(!styleStack.empty()){restoreStyle(styleStack.back());styleStack.pop_back();}}
 void push()     {glPushMatrix();pushStyle();}
@@ -484,9 +581,36 @@ static void setBg(float r,float g,float b,float a){
     glClearColor(r,g,b,a);
     glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 }
-void background(float gray,float a)           {color c=makeColor(gray,a);unsigned int v=c.value;setBg((v>>16&0xFF)/255.f,(v>>8&0xFF)/255.f,(v&0xFF)/255.f,(v>>24&0xFF)/255.f);}
-void background(float r,float g,float b,float a){color c=makeColor(r,g,b,a);unsigned int v=c.value;setBg((v>>16&0xFF)/255.f,(v>>8&0xFF)/255.f,(v&0xFF)/255.f,(v>>24&0xFF)/255.f);}
-void background(color c)                      {unsigned int v=c.value;setBg((v>>16&0xFF)/255.f,(v>>8&0xFF)/255.f,(v&0xFF)/255.f,(v>>24&0xFF)/255.f);}
+void background(float gray, float a) {
+    fprintf(stderr,"[bg] gray=%.0f\n",gray); fflush(stderr);
+    color c = makeColor(gray, a);
+    unsigned int v = c.value;
+    setBg((v>>16&0xFF)/255.f, (v>>8&0xFF)/255.f, (v&0xFF)/255.f, (v>>24&0xFF)/255.f);
+    fprintf(stderr,"[bg] done\n"); fflush(stderr);
+}
+void background(float r, float g, float b, float a) {
+    color c = makeColor(r, g, b, a);
+    unsigned int v = c.value;
+    setBg((v>>16&0xFF)/255.f, (v>>8&0xFF)/255.f, (v&0xFF)/255.f, (v>>24&0xFF)/255.f);
+}
+void background(color c) {
+    unsigned int v = c.value;
+    setBg((v>>16&0xFF)/255.f, (v>>8&0xFF)/255.f, (v&0xFF)/255.f, (v>>24&0xFF)/255.f);
+}
+static void drawImageRect(PImage& img,float x,float y,float w,float h); // fwd for background(PImage)
+void background(const PImage& img) {
+    // Draw image as full-canvas background
+    if (img.width == 0 || img.height == 0) return;
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
+    glOrtho(0, logicalW, logicalH, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+    glDisable(GL_DEPTH_TEST);
+    drawImageRect(const_cast<PImage&>(img), 0, 0, (float)logicalW, (float)logicalH);
+    glMatrixMode(GL_PROJECTION); glPopMatrix();
+    glMatrixMode(GL_MODELVIEW); glPopMatrix();
+    if (defaultP3D) glEnable(GL_DEPTH_TEST);
+}
 void clear(){glClearColor(0,0,0,0);glClear(GL_COLOR_BUFFER_BIT);}
 
 // =============================================================================
@@ -496,6 +620,14 @@ void clear(){glClearColor(0,0,0,0);glClear(GL_COLOR_BUFFER_BIT);}
 void fill(float gray,float a)              {setFillFromColor(makeColor(gray,a));}
 void fill(float r,float g,float b,float a) {setFillFromColor(makeColor(r,g,b,a));}
 void fill(color c)                         {setFillFromColor(c);}
+void fill(color c, float a) {
+    unsigned int v = c.value;
+    fillR = (v>>16&0xFF)/255.f;
+    fillG = (v>>8 &0xFF)/255.f;
+    fillB = (v    &0xFF)/255.f;
+    fillA = std::min(255.f, std::max(0.f, a)) / 255.f;
+    doFill = true;
+}
 void noFill()                              {doFill=false;}
 void stroke(float gray,float a)            {setStrokeFromColor(makeColor(gray,a));}
 void stroke(float r,float g,float b,float a){setStrokeFromColor(makeColor(r,g,b,a));}
@@ -520,9 +652,27 @@ void ellipseMode(int m) {currentEllipseMode=m;}
 // 2D PRIMITIVES
 // =============================================================================
 
-void point(float x,float y){if(!doStroke)return;applyStroke();glPointSize(strokeW);glBegin(GL_POINTS);glVertex2f(x,y);glEnd();restoreLighting();}
-void line(float x1,float y1,float x2,float y2){if(!doStroke)return;applyStroke();glLineWidth(strokeW);glBegin(GL_LINES);glVertex2f(x1,y1);glVertex2f(x2,y2);glEnd();restoreLighting();}
-void line(float x1,float y1,float z1,float x2,float y2,float z2){if(!doStroke)return;applyStroke();glLineWidth(strokeW);glBegin(GL_LINES);glVertex3f(x1,y1,z1);glVertex3f(x2,y2,z2);glEnd();restoreLighting();}
+void point(float x, float y) {
+    if (!doStroke) return;
+    applyStroke();
+    glPointSize(strokeW);
+    glBegin(GL_POINTS); glVertex2f(x, y); glEnd();
+    restoreLighting();
+}
+void line(float x1, float y1, float x2, float y2) {
+    if (!doStroke) return;
+    applyStroke();
+    glLineWidth(strokeW);
+    glBegin(GL_LINES); glVertex2f(x1, y1); glVertex2f(x2, y2); glEnd();
+    restoreLighting();
+}
+void line(float x1, float y1, float z1, float x2, float y2, float z2) {
+    if (!doStroke) return;
+    applyStroke();
+    glLineWidth(strokeW);
+    glBegin(GL_LINES); glVertex3f(x1,y1,z1); glVertex3f(x2,y2,z2); glEnd();
+    restoreLighting();
+}
 void ellipse(float cx,float cy,float w,float h){float rx=w,ry=h;resolveEllipse(cx,cy,rx,ry);drawEllipseGeom(cx,cy,rx,ry);}
 void circle(float cx,float cy,float d){ellipse(cx,cy,d,d);}
 void arc(float cx,float cy,float w,float h,float s,float e){
@@ -611,29 +761,42 @@ void sphere(float r){
             glEnd();
         }
     }
-    if(doStroke && !doFill){
+    if(doStroke){
         applyStroke(); glLineWidth(strokeW);
-        for(int i=0;i<=stacks;i++){
-            float lat=PI*(-0.5f+(float)i/stacks);
-            float y0=r*std::sin(lat), rc=r*std::cos(lat);
-            glBegin(GL_LINE_LOOP);
+        // Draw sphere as a wireframe of triangles -- matches Processing Java's
+        // sphere appearance with diagonal lines across each quad cell.
+        auto sv = [&](float lat, float lng) {
+            glVertex3f(r*std::cos(lat)*std::cos(lng),
+                       r*std::sin(lat),
+                       r*std::cos(lat)*std::sin(lng));
+        };
+        glBegin(GL_LINES);
+        for(int i=0;i<stacks;i++){
+            float lat0=PI*(-0.5f+(float)i/stacks);
+            float lat1=PI*(-0.5f+(float)(i+1)/stacks);
             for(int j=0;j<slices;j++){
-                float lng=TWO_PI*(float)j/slices;
-                glVertex3f(rc*std::cos(lng), y0, rc*std::sin(lng));
+                float lng0=TWO_PI*(float)j/slices;
+                float lng1=TWO_PI*(float)(j+1)/slices;
+                // Four edges of the quad + one diagonal (like Processing Java)
+                // Bottom edge (latitude ring)
+                sv(lat0,lng0); sv(lat0,lng1);
+                // Left edge (longitude line)
+                sv(lat0,lng0); sv(lat1,lng0);
+                // Diagonal (gives the characteristic triangulated look)
+                sv(lat0,lng1); sv(lat1,lng0);
             }
-            glEnd();
         }
-        for(int j=0;j<slices;j++){
-            float lng=TWO_PI*(float)j/slices;
-            glBegin(GL_LINE_STRIP);
-            for(int i=0;i<=stacks;i++){
-                float lat=PI*(-0.5f+(float)i/stacks);
-                glVertex3f(r*std::cos(lat)*std::cos(lng),
-                           r*std::sin(lat),
-                           r*std::cos(lat)*std::sin(lng));
+        // Top latitude ring
+        {
+            float lat1=PI*(-0.5f+(float)stacks/stacks);
+            for(int j=0;j<slices;j++){
+                float lng0=TWO_PI*(float)j/slices;
+                float lng1=TWO_PI*(float)(j+1)/slices;
+                sv(lat1,lng0); sv(lat1,lng1);
             }
-            glEnd();
         }
+        glEnd();
+        restoreLighting();
     }
 }
 
@@ -891,12 +1054,15 @@ static void applyStandardModelview(); // forward declaration
 // Internal helper -- sets up the standard Processing Y-flipped perspective
 // camera. Called by camera() and perspective() so they stay in sync.
 static void applyDefaultCamera() {
-    float eyeZ  = ((float)winHeight / 2.0f) / std::tan(PI * 60.0f / 360.0f);
+    // Use logical size (from size()) not tile size, so camera matches sketch coords.
+    float eyeZ  = ((float)logicalH / 2.0f) / std::tan(PI * 60.0f / 360.0f);
     float near_ = eyeZ / 10.0f;
     float far_  = eyeZ * 10.0f;
+    if(gWindow){int fw=logicalW,fh=logicalH;glfwGetFramebufferSize(gWindow,&fw,&fh);if(fw>0)fbW=fw;if(fh>0)fbH=fh;}
+    glViewport(0, 0, fbW, fbH);
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
-    gluPerspective(60.0, (double)winWidth / winHeight, near_, far_);
-    glScalef(1, -1, 1);   // flip Y so Processing Y-down screen coords work
+    gluPerspective(60.0, (double)logicalW / logicalH, near_, far_);
+    glScalef(1, -1, 1);
     applyStandardModelview();
 }
 
@@ -904,11 +1070,10 @@ void camera(){
     applyDefaultCamera();
 }
 void camera(float ex,float ey,float ez,float cx,float cy,float cz,float ux,float uy,float uz){
-    // Custom camera -- keep the same Y-flip projection, just change the view
-    float eyeZ = ((float)winHeight/2.0f) / std::tan(PI*60.0f/360.0f);
+    float eyeZ = ((float)logicalH/2.0f) / std::tan(PI*60.0f/360.0f);
     float near_ = eyeZ/10.0f, far_ = eyeZ*10.0f;
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
-    gluPerspective(60.0,(double)winWidth/winHeight,near_,far_);
+    gluPerspective(60.0,(double)logicalW/logicalH,near_,far_);
     glScalef(1,-1,1);
     glMatrixMode(GL_MODELVIEW); glLoadIdentity();
     gluLookAt(ex,ey,ez,cx,cy,cz,ux,uy,uz);
@@ -932,10 +1097,11 @@ void perspective(float fov, float aspect, float zNear, float zFar) {
 // Processing modelview camera (eye at eyeZ looking at canvas centre,
 // Y-down screen coordinates) and enables depth test.
 static void applyStandardModelview() {
-    float eyeZ = ((float)winHeight / 2.0f) / std::tan(PI * 60.0f / 360.0f);
+    // Use logicalW/H so camera matches sketch coordinate space.
+    float eyeZ = ((float)logicalH / 2.0f) / std::tan(PI * 60.0f / 360.0f);
     glMatrixMode(GL_MODELVIEW); glLoadIdentity();
-    gluLookAt(winWidth/2.0, winHeight/2.0, eyeZ,
-              winWidth/2.0, winHeight/2.0, 0,
+    gluLookAt(logicalW/2.0, logicalH/2.0, eyeZ,
+              logicalW/2.0, logicalH/2.0, 0,
               0, 1, 0);
     glFrontFace(GL_CW);
     glDisable(GL_CULL_FACE);
@@ -951,7 +1117,7 @@ void ortho() {
     // gluLookAt is NOT used here -- we want raw screen-space coordinates,
     // so we use a simple identity modelview with Y-flipped glOrtho.
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
-    glOrtho(0, winWidth, winHeight, 0, -winHeight, winHeight);
+    glOrtho(0, logicalW, logicalH, 0, -logicalH, logicalH);
     glMatrixMode(GL_MODELVIEW); glLoadIdentity();
     glFrontFace(GL_CW);
     glDisable(GL_CULL_FACE);
@@ -1383,6 +1549,99 @@ void text(float v, float x, float y) {
     std::ostringstream ss; ss << v; renderText(ss.str(), x, y);
 }
 
+// text(str, x, y, w, h) -- word-wrap into a bounding box, matching Processing Java.
+// Words are wrapped when they exceed width w. Lines are clipped at height h.
+// x,y is top-left corner of the box. Text starts at the baseline of the first line.
+void text(const std::string& msg, float x, float y, float w, float h) {
+    if (msg.empty() || w <= 0) return;
+    float leading = (g_textLeading > 0) ? g_textLeading : g_textSize * 1.4f;
+    float maxY = (h > 0) ? y + h : 1e9f;
+
+    // Split message into tokens: words and explicit newlines
+    std::vector<std::string> tokens;
+    {
+        std::string cur;
+        for (char c : msg) {
+            if (c == '\n') {
+                if (!cur.empty()) { tokens.push_back(cur); cur.clear(); }
+                tokens.push_back("\n");
+            } else if (c == ' ') {
+                if (!cur.empty()) { tokens.push_back(cur); cur.clear(); }
+            } else {
+                cur += c;
+            }
+        }
+        if (!cur.empty()) tokens.push_back(cur);
+    }
+
+    // Layout: accumulate words into lines, wrap when line width exceeds w
+    float cy = y;
+    std::string line;
+
+    auto flushLine = [&](){
+        if (!line.empty() && cy + g_textSize <= maxY) {
+            renderText(line, x, cy);
+        }
+        line.clear();
+        cy += leading;
+    };
+
+    for (auto& tok : tokens) {
+        if (tok == "\n") {
+            // Explicit newline: flush current line and advance
+            if (cy + g_textSize <= maxY) renderText(line, x, cy);
+            line.clear();
+            cy += leading;
+            continue;
+        }
+        // Try adding this word to the current line
+        std::string candidate = line.empty() ? tok : line + " " + tok;
+        float cw = getLineWidth(candidate);
+
+        if (!line.empty() && cw > w) {
+            // Word doesn't fit: flush current line, start new line with this word
+            if (cy + g_textSize <= maxY) renderText(line, x, cy);
+            line.clear();
+            cy += leading;
+            // If the word itself is wider than w, wrap it character by character
+            if (getLineWidth(tok) > w) {
+                std::string charLine;
+                for (char c : tok) {
+                    std::string test2 = charLine + c;
+                    if (!charLine.empty() && getLineWidth(test2) > w) {
+                        if (cy + g_textSize <= maxY) renderText(charLine, x, cy);
+                        charLine.clear();
+                        cy += leading;
+                    }
+                    charLine += c;
+                }
+                line = charLine;
+            } else {
+                line = tok;
+            }
+        } else if (line.empty() && cw > w) {
+            // First word on line is too wide: wrap char by char
+            std::string charLine;
+            for (char c : tok) {
+                std::string test2 = charLine + c;
+                if (!charLine.empty() && getLineWidth(test2) > w) {
+                    if (cy + g_textSize <= maxY) renderText(charLine, x, cy);
+                    charLine.clear();
+                    cy += leading;
+                }
+                charLine += c;
+            }
+            line = charLine;
+        } else {
+            line = candidate;
+        }
+    }
+    // Flush remaining text
+    if (!line.empty() && cy + g_textSize <= maxY) {
+        renderText(line, x, cy);
+    }
+}
+
 void textSize(float size) {
     g_textSize = size;
 #if PROCESSING_HAS_STB_TRUETYPE
@@ -1424,34 +1683,96 @@ float textDescent() {
 // =============================================================================
 // IMAGE
 // =============================================================================
+static void drawImageRect(PImage& img,float x,float y,float w,float h);
 
-PImage createImage(int w,int h){return PImage(w,h);}
+PImage* createImage(int w,int h,int mode){
+    PImage* img = new PImage(w,h);
+    if(mode==3/*ARGB*/) {
+        std::fill(img->pixels.begin(),img->pixels.end(),0x00000000);
+    }
+    img->dirty=true;
+    return img;
+}
 
 PImage* loadImage(const std::string& path){
-    std::cerr<<"loadImage: enable stb_image in Processing.cpp: "<<path<<"\n";
-    return nullptr;
+    // Search paths: current dir, data/, files/, and sketch subdirs
+    std::vector<std::string> tries = {
+        path,
+        "data/" + path,
+        "files/" + path,
+        "../data/" + path,    // in case running from a subdirectory
+    };
+#ifdef PROCESSING_HAS_STB_IMAGE
+    for (auto& p : tries) {
+        int w, h, ch;
+        unsigned char* data = stbi_load(p.c_str(), &w, &h, &ch, 4);
+        if (!data) continue;
+        PImage* img = new PImage(w, h);
+        for (int i = 0; i < w*h; i++) {
+            unsigned char r=data[i*4+0], g=data[i*4+1], b=data[i*4+2], a=data[i*4+3];
+            img->pixels[i] = ((unsigned int)a<<24)|((unsigned int)r<<16)|((unsigned int)g<<8)|b;
+        }
+        stbi_image_free(data);
+        img->dirty = true;
+        return img;
+    }
+#endif
+    for (auto& p : tries)
+        std::cerr << "[loadImage] not found: " << p << "\n";
+    std::cerr << "[loadImage] returning empty image -- check the path above\n";
+    return new PImage(); // return empty (not null) so -> calls are safe
 }
+
 
 PGraphics* createGraphics(int w,int h){return new PGraphics(w,h);}
 
 static void drawImageRect(PImage& img,float x,float y,float w,float h){
-    if(img.dirty)img.uploadTexture();
-    if(img.texID==0)return;
-    glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,img.texID);
-    glColor4f(doTint?tintR:1,doTint?tintG:1,doTint?tintB:1,doTint?tintA:1);
+    fprintf(stderr,"[drawImageRect] w=%d h=%d dirty=%d texID=%u x=%.0f y=%.0f\n",
+            img.width,img.height,img.dirty,img.texID,x,y); fflush(stderr);
+    if(img.width==0||img.height==0) return;
+    if(img.dirty) img.uploadTexture();
+    fprintf(stderr,"[drawImageRect] after upload texID=%u\n",img.texID); fflush(stderr);
+    if(img.texID==0) return;
+    // Apply imageMode
+    if(currentImageMode==CENTER){  x-=w*0.5f; y-=h*0.5f; }
+    else if(currentImageMode==CORNERS){ w=w-x; h=h-y; }
+    // Apply alpha blending for transparent images
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D,img.texID);
+    glColor4f(doTint?tintR:1.f,doTint?tintG:1.f,doTint?tintB:1.f,doTint?tintA:1.f);
     glBegin(GL_QUADS);
     glTexCoord2f(0,0);glVertex2f(x,y);
     glTexCoord2f(1,0);glVertex2f(x+w,y);
     glTexCoord2f(1,1);glVertex2f(x+w,y+h);
     glTexCoord2f(0,1);glVertex2f(x,y+h);
     glEnd();
-    glBindTexture(GL_TEXTURE_2D,0);glDisable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D,0);
+    glDisable(GL_TEXTURE_2D);
 }
-void image(PImage& img,float x,float y)           {drawImageRect(img,x,y,(float)img.width,(float)img.height);}
-void image(PImage& img,float x,float y,float w,float h){drawImageRect(img,x,y,w,h);}
+void image(const PImage& img,float x,float y) {
+    fprintf(stderr,"[image] &img=%p w=%d h=%d texID=%u\n",(void*)&img,img.width,img.height,img.texID); fflush(stderr);
+    if(img.width==0||img.height==0)return;
+    drawImageRect(const_cast<PImage&>(img),x,y,(float)img.width,(float)img.height);
+}
+void image(const PImage& img,float x,float y,float w,float h) {
+    if(img.width==0||img.height==0)return;
+    drawImageRect(const_cast<PImage&>(img),x,y,w,h);
+}
 void imageMode(int m){currentImageMode=m;}
-void tint(float gray,float a){color c=makeColor(gray,a);unsigned int v=c.value;tintR=(v>>16&0xFF)/255.f;tintG=(v>>8&0xFF)/255.f;tintB=(v&0xFF)/255.f;tintA=(v>>24&0xFF)/255.f;doTint=true;}
-void tint(float r,float g,float b,float a){color c=makeColor(r,g,b,a);unsigned int v=c.value;tintR=(v>>16&0xFF)/255.f;tintG=(v>>8&0xFF)/255.f;tintB=(v&0xFF)/255.f;tintA=(v>>24&0xFF)/255.f;doTint=true;}
+void tint(float gray, float a) {
+    color c = makeColor(gray, a); unsigned int v = c.value;
+    tintR=(v>>16&0xFF)/255.f; tintG=(v>>8&0xFF)/255.f;
+    tintB=(v&0xFF)/255.f;     tintA=(v>>24&0xFF)/255.f;
+    doTint = true;
+}
+void tint(float r, float g, float b, float a) {
+    color c = makeColor(r, g, b, a); unsigned int v = c.value;
+    tintR=(v>>16&0xFF)/255.f; tintG=(v>>8&0xFF)/255.f;
+    tintB=(v&0xFF)/255.f;     tintA=(v>>24&0xFF)/255.f;
+    doTint = true;
+}
 void noTint(){doTint=false;}
 
 void filter(int mode){filter(mode,0.5f);}
@@ -1524,22 +1845,30 @@ void save(const std::string& fn){saveFrame(fn);}
 
 static bool mouseWasPressed=false;
 
-static void cursor_pos_cb(GLFWwindow*,double x,double y){
-    pmouseX=mouseX;pmouseY=mouseY;
-    mouseX=(float)x;mouseY=(float)y;
-    if(_mousePressed){if(_onMouseDragged)_onMouseDragged();}
-    else             {if(_onMouseMoved)  _onMouseMoved();}
+static void cursor_pos_cb(GLFWwindow*, double x, double y) {
+    mouseInWindow = true;
+    pmouseX = mouseX;
+    pmouseY = mouseY;
+    mouseX  = (float)x;
+    mouseY  = (float)y;
+    if (_mousePressed) { if (_onMouseDragged) _onMouseDragged(); }
+    else               { if (_onMouseMoved)   _onMouseMoved();   }
 }
-static void mouse_btn_cb(GLFWwindow*,int btn,int action,int mods){g_currentMods=mods;
-    if(action==GLFW_PRESS){
-        _mousePressed=true;mouseButton=(btn==GLFW_MOUSE_BUTTON_LEFT)?LEFT:(btn==GLFW_MOUSE_BUTTON_RIGHT)?RIGHT:CENTER; // LEFT=37,RIGHT=39,CENTER=3
-        if(_onMousePressed)_onMousePressed();
-        mouseWasPressed=true;
-    } else if(action==GLFW_RELEASE){
-        _mousePressed=false;
-        if(_onMouseReleased)_onMouseReleased();
-        if(mouseWasPressed&&_onMouseClicked)_onMouseClicked();
-        mouseWasPressed=false;mouseButton=-1;
+static void mouse_btn_cb(GLFWwindow*, int btn, int action, int mods) {
+    g_currentMods = mods;
+    if (action == GLFW_PRESS) {
+        _mousePressed = true;
+        if      (btn == GLFW_MOUSE_BUTTON_LEFT)   mouseButton = LEFT;
+        else if (btn == GLFW_MOUSE_BUTTON_RIGHT)  mouseButton = RIGHT;
+        else                                       mouseButton = CENTER;
+        if (_onMousePressed) _onMousePressed();
+        mouseWasPressed = true;
+    } else if (action == GLFW_RELEASE) {
+        _mousePressed = false;
+        if (_onMouseReleased) _onMouseReleased();
+        if (mouseWasPressed && _onMouseClicked) _onMouseClicked();
+        mouseWasPressed = false;
+        mouseButton = -1;
     }
 }
 static void scroll_cb(GLFWwindow*,double,double yoffset){
@@ -1652,13 +1981,16 @@ static void key_cb(GLFWwindow* w, int k, int /*scancode*/, int action, int mods)
                 // Printable key: if a modifier (Ctrl/Alt) is held, char_cb will
                 // NOT fire on Windows for Ctrl+letter combos. Fire immediately.
                 // If no modifier, defer to char_cb so key gets the correct char.
-                if (mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT)) {
-                    // Control combo: key = the letter (uppercase, layout-independent)
+                if (mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER)) {
+                    // Ctrl/Alt/Meta combos: char_cb won't fire.
+                    // Set key to the lowercase letter and fire immediately.
                     if (k >= GLFW_KEY_A && k <= GLFW_KEY_Z)
                         key = (char)('a' + (k - GLFW_KEY_A));
                     g_pendingKeyPressed = false; // fire immediately
                 } else {
-                    g_pendingKeyPressed = true; // wait for char_cb
+                    // Plain printable key (possibly with Shift): defer to char_cb
+                    // so key gets the correct shifted/layout-aware character.
+                    g_pendingKeyPressed = true;
                 }
                 break;
         }
@@ -1674,13 +2006,36 @@ static void key_cb(GLFWwindow* w, int k, int /*scancode*/, int action, int mods)
         if (_onKeyReleased) _onKeyReleased();
     }
 }
-static void focus_cb(GLFWwindow*,int f){focused=(f==GLFW_TRUE);}
+static void focus_cb(GLFWwindow*,int f){
+    focused = (f == GLFW_TRUE);
+    if (!focused) g_pendingKeyPressed = false; // clear pending if focus lost
+}
 static void winpos_cb(GLFWwindow*,int,int){if(_onWindowMoved)_onWindowMoved();}
+static bool _setupDone = false; // set true after setup() returns and main loop starts
+
+static bool _inWinsizeCb = false; // prevent re-entry
 static void winsize_cb(GLFWwindow*,int lw,int lh){
-    if(!lw||!lh)return;
-    winWidth=lw; winHeight=lh;
-    setProjection(lw,lh);
-    if(_onWindowResized)_onWindowResized();
+    if(!lw||!lh||_inWinsizeCb)return;
+    _inWinsizeCb = true;
+    if(_setupDone){
+        // Update winWidth/winHeight for resizable sketches.
+        // logicalW/H stay fixed at what size() requested.
+        // For non-resizable sketches this is just cosmetic.
+        if(isResizable){ winWidth=lw; winHeight=lh; }
+        if(_onWindowResized)_onWindowResized();
+    }
+    // setProjection uses logicalW/H for ortho, actual size for viewport.
+    setProjection(winWidth, winHeight);
+    // Only trigger redraw if size actually changed from last draw.
+    // This prevents flashing from rapid i3 resize events.
+    static int _lastDrawW = 0, _lastDrawH = 0;
+    if(_setupDone && !looping) {
+        if(lw != _lastDrawW || lh != _lastDrawH) {
+            _lastDrawW = lw; _lastDrawH = lh;
+            redrawOnce = true;
+        }
+    }
+    _inWinsizeCb = false;
 }
 static void fbsize_cb(GLFWwindow*,int fw,int fh){
     if(!fw||!fh)return;
@@ -1765,8 +2120,10 @@ void run(){
     glShadeModel(GL_SMOOTH);
     glEnable(GL_NORMALIZE);
     smooth();
-    setProjection(winWidth,winHeight);
-    {int fw,fh;glfwGetFramebufferSize(gWindow,&fw,&fh);pixelWidth=fw;pixelHeight=fh;}
+    // Don't call setProjection here -- let size() in setup() do it
+    // with the correct dimensions. Calling it now with winWidth=640,winHeight=480
+    // (defaults) would set the wrong ortho before setup() changes the size.
+    {int fw,fh;glfwGetFramebufferSize(gWindow,&fw,&fh);pixelWidth=fw;pixelHeight=fh;fbW=fw>0?fw:logicalW;fbH=fh>0?fh:logicalH;}
 
     // Enable sticky keys/buttons: GLFW will keep state as PRESSED until polled,
     // Clear both buffers once at startup so the sketch starts with
@@ -1800,35 +2157,67 @@ void run(){
     }
 
     glfwFocusWindow(gWindow);  // ensure input focus on Windows
-    setup();
 
-    // wireCallbacks() is generated by the IDE into Sketch_run.cpp.
-    // It assigns only the _on* pointers for callbacks the sketch actually defines.
-    // This avoids undefined reference errors from taking addresses of
-    // unimplemented functions. _wireCallbacksFn is set before run() is called.
-    if (_wireCallbacksFn) _wireCallbacksFn();
-
-    // Re-apply the correct 2D projection after setup() finishes.
-    // setup() may have called size() which sets the projection, but any
-    // subsequent GL calls in setup() might have left a different matrix active.
-    // This ensures the correct ortho is always set before the main loop.
-    if (!defaultP3D) setProjection(winWidth, winHeight);
-
-    // If setup() called noLoop(), don't run a draw() frame -- just swap once
-    // to show what setup() drew, then enter the event-only loop.
-    if (!looping) {
+    // Settle loop: poll+swap several times BEFORE setup() runs so i3/tiling WMs
+    // fully resize the window first. winsize_cb fires during these polls and
+    // sets the correct viewport. After settling, setup() and draw() use the
+    // correct dimensions from the start -- no shifted first frame.
+    _setupDone = true; // enable winsize_cb to update projection during settle
+    for (int _settle = 0; _settle < 5; _settle++) {
+        glfwPollEvents();
         glfwSwapBuffers(gWindow);
     }
-    redrawOnce = looping; // only trigger a draw frame if we're actually looping
+    if (!defaultP3D) setProjection(winWidth, winHeight);
+
+    setup();
+
+    fprintf(stderr, "[ProcessingGL] setup() completed\n"); fflush(stderr);
+    if (_wireCallbacksFn) _wireCallbacksFn();
+
+    if (!defaultP3D) {
+        glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+    }
+
+    // If setup() called noLoop(): run draw() once then swap.
+    // Static sketches have an empty draw() -- no-op.
+    // Structured noLoop sketches (like Pie Chart) need draw() to show content.
+    if (!looping) {
+        if (defaultP3D) {
+            // P3D static sketch: setup() already drew everything with the correct
+            // camera. Just apply projection state for the draw() call (which may
+            // be empty for static sketches, or may draw content for structured ones).
+            glViewport(0, 0, fbW, fbH);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDisable(GL_CULL_FACE);
+            glFrontFace(GL_CW);
+            glEnable(GL_NORMALIZE);
+            // Do NOT clear -- setup() already drew to the back buffer.
+            // Only clear if draw() will redraw everything (i.e. calls background()).
+            applyDefaultCamera();
+        } else {
+            setProjection(logicalW, logicalH);
+        }
+        draw(); ++frameCount;
+        glfwSwapBuffers(gWindow);
+    }
+
+    fprintf(stderr, "[ProcessingGL] entering main loop, looping=%d gWindow=%p\n",
+            looping, (void*)gWindow); fflush(stderr);
+    if(glfwWindowShouldClose(gWindow)){
+        fprintf(stderr, "[ProcessingGL] window already wants to close before loop!\n"); fflush(stderr);
+    }
+    redrawOnce = looping;
     auto last=std::chrono::steady_clock::now();
     while(!glfwWindowShouldClose(gWindow)){
+        static int frameDbg=0;
+        if(frameDbg<3){ fprintf(stderr,"[frame %d] start\n",frameDbg); fflush(stderr); }
         pmouseX=mouseX;pmouseY=mouseY;
         if(looping||redrawOnce){
             redrawOnce=false;
 
             if(defaultP3D){
-                // Set up viewport
-                glViewport(0,0,winWidth,winHeight);
+                glViewport(0, 0, fbW, fbH);
                 glEnable(GL_DEPTH_TEST);
                 glDepthFunc(GL_LESS);
                 glDisable(GL_CULL_FACE);
@@ -1849,9 +2238,9 @@ void run(){
                 // where framebuffer may be 2x logical size) but logical
                 // winWidth/winHeight for the ortho matrix so sketch pixel
                 // coordinates map 1:1 regardless of DPI scaling.
-                glViewport(0, 0, winWidth, winHeight);
+                glViewport(0, 0, fbW, fbH);
                 glMatrixMode(GL_PROJECTION); glLoadIdentity();
-                glOrtho(0, winWidth, winHeight, 0, -1, 1);
+                glOrtho(0, logicalW, logicalH, 0, -1, 1);
                 glMatrixMode(GL_MODELVIEW); glLoadIdentity();
                 glDisable(GL_DEPTH_TEST);
                 glDisable(GL_LIGHTING);
@@ -1890,9 +2279,32 @@ void run(){
             glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, matBlack);
             glMaterialf (GL_FRONT_AND_BACK, GL_SHININESS, 0.0f);
 
-            draw(); ++frameCount;
+            // Draw guard: handle different sketch types
+            if (!looping && _staticSketchSetup) {
+                // Static sketch: reset style and redraw
+                doFill=true; doStroke=true;
+                fillR=1; fillG=1; fillB=1; fillA=1;
+                strokeR=0; strokeG=0; strokeB=0; strokeA=1; strokeW=1;
+                colorModeVal=RGB;
+                colorMaxH=255; colorMaxS=255; colorMaxB=255; colorMaxA=255;
+                lightsEnabled=false; lightIndex=0;
+                _staticSketchSetup();
+            } else {
+                // Run draw() every frame -- no mouseInWindow guard.
+                // The Hue sketch first-frame issue is handled by the settle loop
+                // ensuring mouseX/mouseY are 0 which is acceptable.
+                glGetError(); // clear any pending GL errors
+                fprintf(stderr,"[frame %d] calling draw()\n",frameCount); fflush(stderr);
+                draw(); ++frameCount;
+                fprintf(stderr,"[frame %d] draw() returned\n",frameCount); fflush(stderr);
+                GLenum glerr = glGetError();
+                if (glerr != GL_NO_ERROR) {
+                    fprintf(stderr, "[GL error 0x%X in draw frame %d]\n", glerr, frameCount);
+                }
+            }
 
             glfwSwapBuffers(gWindow);
+            if(frameCount<=2){ fprintf(stderr,"[frame] swapped\n"); fflush(stderr); }
         }
         glfwPollEvents();
         auto now=std::chrono::steady_clock::now();
@@ -2155,7 +2567,7 @@ static bool tryLoadTTF(const std::string& path, float size) {
         // font load success -- silent (stderr only for failures)
         return true;
     }
-    std::cerr << "[font] failed to load: " << path << "\n";
+    // Silent on individual failures -- caller reports if all fail
 #else
     std::cerr << "[font] stb_truetype not available -- put stb_truetype.h in src/\n";
 #endif
@@ -2173,13 +2585,79 @@ PFont loadFont(const std::string& filename) {
 PFont createFont(const std::string& name, float size, bool /*smooth*/) {
     PFont f(name, size);
     // Try as file path first, then common system paths
+    // Strip extension from name if already present, to avoid double extensions
+    std::string baseName = name;
+    if (baseName.size() > 4 && (baseName.substr(baseName.size()-4) == ".ttf"
+                              || baseName.substr(baseName.size()-4) == ".otf")) {
+        // name already has extension -- use as-is for first attempt
+    } else {
+        baseName = ""; // will build paths with extensions below
+    }
+
+    std::string nameNoExt = name;
+    if (nameNoExt.size() > 4 && (nameNoExt.substr(nameNoExt.size()-4) == ".ttf"
+                               || nameNoExt.substr(nameNoExt.size()-4) == ".otf"))
+        nameNoExt = nameNoExt.substr(0, nameNoExt.size()-4);
+
     std::vector<std::string> paths = {
+        // Try exact name first (may already have extension)
         name,
-        name + ".ttf",
-        std::string("fonts/") + name + ".ttf",
-        std::string("/usr/share/fonts/truetype/dejavu/") + name + ".ttf",
+        // Try adding extensions if not already present
+        nameNoExt + ".ttf",
+        nameNoExt + ".otf",
+        // Sketch data/ folder
+        std::string("data/") + name,
+        std::string("data/") + nameNoExt + ".ttf",
+        std::string("data/") + nameNoExt + ".otf",
+        // Sketch fonts/ folder
+        std::string("fonts/") + name,
+        std::string("fonts/") + nameNoExt + ".ttf",
+        std::string("fonts/") + nameNoExt + ".otf",
+        // Linux system font directories
+        std::string("/usr/share/fonts/truetype/") + nameNoExt + ".ttf",
+        std::string("/usr/share/fonts/opentype/") + nameNoExt + ".otf",
+        std::string("/usr/share/fonts/TTF/") + nameNoExt + ".ttf",
+        std::string("/usr/share/fonts/OTF/") + nameNoExt + ".otf",
+        // Windows system fonts
+        std::string("C:/Windows/Fonts/") + name,
+        std::string("C:/Windows/Fonts/") + nameNoExt + ".ttf",
+        std::string("C:/Windows/Fonts/") + nameNoExt + ".otf",
+        // macOS
+        std::string("/Library/Fonts/") + name,
+        std::string("/System/Library/Fonts/") + name,
     };
-    for (auto& p : paths) if (tryLoadTTF(p, size)) break;
+
+    // Also search system font dirs recursively (Linux: fc-list output)
+    #ifndef _WIN32
+    {
+        FILE* fc = popen(("fc-list : file | grep -i '" + nameNoExt + "' | head -5").c_str(), "r");
+        if (fc) {
+            char buf[512];
+            while (fgets(buf, sizeof(buf), fc)) {
+                std::string line(buf);
+                // fc-list format: /path/to/font.ttf: Family:style
+                size_t colon = line.find(':');
+                if (colon != std::string::npos) {
+                    std::string fpath = line.substr(0, colon);
+                    // strip whitespace
+                    fpath.erase(0, fpath.find_first_not_of(" \t"));
+                    fpath.erase(fpath.find_last_not_of(" \t\n\r") + 1);
+                    if (!fpath.empty()) paths.push_back(fpath);
+                }
+            }
+            pclose(fc);
+        }
+    }
+    #endif
+
+    bool found = false;
+    for (auto& p : paths) {
+        if (tryLoadTTF(p, size)) { found = true; break; }
+    }
+    if (!found) {
+        std::cerr << "[font] Could not find font: " << name << "\n";
+        std::cerr << "[font] Put the .ttf file in your sketch's data/ folder\n";
+    }
     return f;
 }
 

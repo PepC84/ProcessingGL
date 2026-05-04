@@ -221,53 +221,6 @@ for %%S in (Geometry.cpp Mixture.cpp Mandelbrot.cpp StoringInput.cpp) do (
     )
 )
 
-:: Create vim_binds.txt in files\ if it doesn't exist yet
-if not exist "files\vim_binds.txt" (
-    (
-        echo // ProcessingGL Vim Key Bindings
-        echo // Edit this file to add your own notes and reminders.
-        echo // Saved here: files\vim_binds.txt
-        echo // The IDE loads this file automatically on startup.
-        echo.
-        echo // --- Normal mode motions ---
-        echo h / l         left / right
-        echo j / k         down / up
-        echo w / b         next / previous word
-        echo 0 / $         start / end of line
-        echo ^             first non-blank character
-        echo gg / G        first / last line
-        echo Ctrl+d/u      half page down / up
-        echo.
-        echo // --- Insert mode ---
-        echo i / a         insert before / after cursor
-        echo I / A         insert at start / end of line
-        echo o / O         open line below / above
-        echo Esc           return to Normal mode
-        echo.
-        echo // --- Editing ---
-        echo x / X         delete char under / before cursor
-        echo dd            delete line
-        echo yy / Y        yank line
-        echo p / P         paste below / above
-        echo u / Ctrl+r    undo / redo
-        echo ^>^> / ^<^<      indent / de-indent
-        echo r^<c^>          replace character under cursor
-        echo.
-        echo // --- Visual mode ---
-        echo v / V         character / line visual
-        echo d / y / c     delete / yank / change selection
-        echo.
-        echo // --- IDE shortcuts ---
-        echo Ctrl+b        build
-        echo Ctrl+r        build and run
-        echo Ctrl+s        save
-        echo Ctrl+o        open file
-        echo Ctrl+Shift+v  toggle vim mode
-        echo Ctrl+Shift+m  serial monitor
-        echo Ctrl+Shift+l  library manager
-    ) > "files\vim_binds.txt"
-    echo [OK]  files\vim_binds.txt created
-) else ( echo [OK]  files\vim_binds.txt already present )
 
 echo [OK]  Project folders ready ^(files\ lib\^)
 

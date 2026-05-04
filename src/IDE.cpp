@@ -10,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <regex>
 #include <set>
 #include <cstdio>
 #include <thread>
@@ -246,7 +247,13 @@ static std::string getDefaultBuildFlags() {
     return "-lglfw -lGLEW -lGL -lGLU -lm -pthread";
 #endif
 }
-static std::string buildFlags = getDefaultBuildFlags();
+static std::string buildFlags = [](){
+    std::string f = getDefaultBuildFlags();
+    // Enable stb_image if header is present in src/
+    FILE* test = fopen("src/stb_image.h", "r");
+    if (test) { fclose(test); f += " -DPROCESSING_HAS_STB_IMAGE"; }
+    return f;
+}();
 
 // Sketch process (pipe capture)
 static plat_proc_t       sketchProc    = plat_proc_invalid();
@@ -725,21 +732,29 @@ static std::string javaToC(const std::string& line) {
 
     for (auto& [from, to] : REPLACEMENTS) {
         std::string result;
-        size_t pos = 0;
-        while (pos < out.size()) {
-            size_t found = out.find(from, pos);
-            if (found == std::string::npos) { result += out.substr(pos); break; }
-            // Check word boundaries
-            bool leftOk  = (found == 0)              || !isIdChar(out[found-1]);
-            bool rightOk = (found+from.size() >= out.size()) || !isIdChar(out[found+from.size()]);
-            if (leftOk && rightOk) {
-                result += out.substr(pos, found-pos);
-                result += to;
-                pos = found + from.size();
-            } else {
-                result += out.substr(pos, found-pos+1);
-                pos = found + 1;
+        size_t i = 0, n = out.size();
+        bool inStr = false, inChar = false;
+        while (i < n) {
+            // Track string/char literals to avoid replacing inside them
+            if (!inChar && !inStr && out[i] == '"')  { inStr  = true;  result += out[i++]; continue; }
+            if (inStr) {
+                if (out[i] == '\\' && i+1 < n)      { result += out[i++]; result += out[i++]; continue; }
+                if (out[i] == '"')                    { inStr = false; result += out[i++]; continue; }
+                result += out[i++]; continue;
             }
+            if (!inStr && out[i] == '\'')            { inChar = true;  result += out[i++]; continue; }
+            if (inChar) {
+                if (out[i] == '\\' && i+1 < n)      { result += out[i++]; result += out[i++]; continue; }
+                if (out[i] == '\'')                   { inChar = false; result += out[i++]; continue; }
+                result += out[i++]; continue;
+            }
+            // Outside string/char: check for keyword match
+            size_t flen = from.size();
+            bool leftOk  = (i == 0) || !isIdChar(out[i-1]);
+            bool matches = leftOk && (i + flen <= n) && out.substr(i, flen) == from;
+            bool rightOk = matches && ((i+flen >= n) || !isIdChar(out[i+flen]));
+            if (matches && rightOk) { result += to; i += flen; }
+            else                    { result += out[i++]; }
         }
         out = result;
     }
@@ -786,6 +801,57 @@ static std::string javaToC(const std::string& line) {
         // Windows macros that break variable names
         renameReserved(out, "far",   "farVal");
         renameReserved(out, "near",  "nearVal");
+    }
+
+    // Replace `int var = lerpColor(` and `int var = color(` with `color var = ...`
+    // because in Processing Java, color IS int, but in C++ they differ.
+    {
+        // Match: (optional whitespace) int (spaces) (identifier) (spaces) = (spaces) (color|lerpColor)(
+        std::regex colorAssign(R"(\bint\s+(\w+)\s*=\s*(color|lerpColor)\s*\()");
+        out = std::regex_replace(out, colorAssign, "color $1 = $2(");
+    }
+
+    // (color param name heuristic removed -- too many false positives)
+
+    // No PImage/PFont auto-translation -- write explicit C++ pointer syntax.
+
+    // Java String concatenation -> C++ fixes:
+    // 1. "literal" + char/int: in Java this works; in C++ "literal" is const char*
+    //    and adding a char/int does pointer arithmetic. Wrap in std::string().
+    // 2. words.length() in concat: returns size_t which can't concat with string.
+    //    Wrap in std::to_string().
+    {
+        // Fix 1: string literal + something -> std::string("literal") + something
+        // Match a quoted string followed by + at end (possibly with spaces)
+        std::regex strConcatRe(R"(("(?:[^"\\]|\\.)*")\s*\+)");
+        out = std::regex_replace(out, strConcatRe, "std::string($1) +");
+
+        // Fix 2: + expr.length() -> + std::to_string(expr.length())
+        std::regex concatLen(R"(\+\s*(\w+)\.length\(\))");
+        out = std::regex_replace(out, concatLen, "+ std::to_string($1.length())");
+    }
+    // .charAt(i) -> [i]  (handled below as regex)
+    // .substring(a,b) -> .substr(a, b-a)
+    // .toUpperCase() -> (need manual or leave -- not common in Processing sketches)
+    // .equals(s) -> == s
+    {
+        // .charAt(i) -> [i]
+        std::regex charAtRe(R"(\.charAt\((\w+)\))");
+        out = std::regex_replace(out, charAtRe, "[$1]");
+        // .equals("...") -> == "..."
+        std::regex equalsRe(R"(\.equals\(([^)]*)\))");
+        out = std::regex_replace(out, equalsRe, " == $1");
+        // .substring(a, b) -> .substr(a, (b)-(a))
+        // Too complex for simple regex -- skip for now
+    }
+
+    // color() ambiguity fix: color(int,int,int,floatVar) is ambiguous in C++.
+    // Cast float variables in color() calls to (int) to resolve.
+    // This handles: color(0, 153, 204, a) where a is float.
+    {
+        // Match color( followed by 3 ints and a float variable as last arg
+        std::regex colorMixed(R"(\bcolor\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([^)\d][^)]*)\))");
+        out = std::regex_replace(out, colorMixed, "color($1,$2,$3,(int)($4))");
     }
 
     // Java/Processing hex color literals: #RRGGBB or #AARRGGBB -> color(0xFFRRGGBB)
@@ -876,18 +942,168 @@ static bool writeSketch() {
     f << "#include \"Processing.h\"\n";
     f << "namespace Processing {\n";
 
+    // Pre-scan: find variable names assigned color()/lerpColor() to fix their type.
+    // Also propagates: if drawBand(a,b,...) is called where a,b are colorVars,
+    // the corresponding params of drawBand are also treated as color.
+    std::set<std::string> colorVars;
+    {
+        // Pass 1: direct assignments
+        std::regex assignRe(R"(\b(\w+)\s*=\s*(color|lerpColor)\s*\()");
+        for (auto& l : code) {
+            std::smatch m; std::string sl = l;
+            while (std::regex_search(sl, m, assignRe)) {
+                colorVars.insert(m[1].str());
+                sl = m.suffix().str();
+            }
+        }
+
+        // Pass 2: propagate through function calls.
+        // For each function call where some args are colorVars, find the
+        // function definition and add the corresponding param names to colorVars.
+        // Repeat until stable.
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            // Find function definitions: retType name(params) {
+            std::regex fnDefRe(R"(^\s*(?:void|int|float|bool)\s+(\w+)\s*\(([^)]*)\))");
+            for (size_t li = 0; li < code.size(); li++) {
+                std::smatch mDef;
+                if (!std::regex_search(code[li], mDef, fnDefRe)) continue;
+                std::string fnName = mDef[1].str();
+                std::string params = mDef[2].str();
+                // Extract param names
+                std::vector<std::string> paramNames;
+                std::regex pnRe(R"(\w+\s+(\w+))");
+                std::string ps = params;
+                std::smatch pm;
+                while (std::regex_search(ps, pm, pnRe)) {
+                    paramNames.push_back(pm[1].str());
+                    ps = pm.suffix().str();
+                }
+                if (paramNames.empty()) continue;
+                // Find calls to this function with colorVar args
+                std::regex callRe("\\b" + fnName + "\\s*\\(([^;{]*)\\)");
+                for (auto& cl : code) {
+                    if (cl.size() > 500) continue; // skip very long lines to avoid regex backtracking
+                    std::smatch mCall;
+                    std::string sl2 = cl;
+                    int _guard = 0;
+                    while (_guard++ < 10 && std::regex_search(sl2, mCall, callRe)) {
+                        // Split args by comma (simplified -- no nested parens)
+                        std::string argStr = mCall[1].str();
+                        std::vector<std::string> args;
+                        std::string cur;
+                        for (char ch : argStr) {
+                            if (ch == ',') { args.push_back(cur); cur.clear(); }
+                            else cur += ch;
+                        }
+                        args.push_back(cur);
+                        // Check which arg positions have colorVars
+                        for (size_t ai = 0; ai < args.size() && ai < paramNames.size(); ai++) {
+                            std::string arg = args[ai];
+                            // strip whitespace
+                            arg.erase(0, arg.find_first_not_of(" \t"));
+                            arg.erase(arg.find_last_not_of(" \t") + 1);
+                            if (colorVars.count(arg) && !colorVars.count(paramNames[ai])) {
+                                colorVars.insert(paramNames[ai]);
+                                changed = true;
+                            }
+                        }
+                        sl2 = mCall.suffix().str();
+                    }
+                }
+            }
+        }
+
+        // Pass 3: also mark int arrays of colorVars as color arrays.
+        // e.g. `int colorOrder[5] = {v, w, x, y, z}` where v..z are colorVars
+        std::regex arrRe(R"(\bint\s+(\w+)\[\d+\]\s*=\s*\{([^}]*)\})");
+        for (auto& l : code) {
+            std::smatch m;
+            std::string sl = l;
+            while (std::regex_search(sl, m, arrRe)) {
+                std::string argStr = m[2].str();
+                bool anyColor = false;
+                std::string cur;
+                for (char ch : argStr + ",") {
+                    if (ch == ',') {
+                        cur.erase(0, cur.find_first_not_of(" \t"));
+                        cur.erase(cur.find_last_not_of(" \t") + 1);
+                        if (colorVars.count(cur)) anyColor = true;
+                        cur.clear();
+                    } else cur += ch;
+                }
+                if (anyColor) colorVars.insert(m[1].str());
+                sl = m.suffix().str();
+            }
+        }
+    }
+
+    // Forward-declare all user-defined void/int/float/bool functions
+    // so they can be called before their definition in the file.
+    {
+        std::regex fnRe(R"(^\s*(void|int|float|bool|double|color|std::string)\s+(\w+)\s*\()");
+        for (auto& l : code) {
+            std::smatch m;
+            std::string sl = sanitizeLine(l);
+            if (std::regex_search(sl, m, fnRe)) {
+                std::string retType = m[1].str();
+                std::string fnName = m[2].str();
+                // Skip Processing built-ins
+                if (fnName=="setup"||fnName=="draw"||fnName=="keyPressed"||
+                    fnName=="keyReleased"||fnName=="keyTyped"||
+                    fnName=="mousePressed"||fnName=="mouseReleased"||
+                    fnName=="mouseClicked"||fnName=="mouseMoved"||
+                    fnName=="mouseDragged"||fnName=="mouseWheel"||
+                    fnName=="windowMoved"||fnName=="windowResized"||
+                    fnName=="settings") continue;
+                // Emit a forward declaration (just the return type and name with ...)
+                // We need the full signature -- find the closing ) on this line
+                size_t open = sl.find('(');
+                size_t close = sl.rfind(')');
+                if (open!=std::string::npos && close!=std::string::npos && close>open) {
+                    std::string sig = sl.substr(open, close-open+1);
+                    // Apply colorVars patch to forward decl signature too,
+                    // so it matches the (patched) definition.
+                    for (auto& cv : colorVars) {
+                        std::regex re("\\bint\\s+(" + cv + ")\\b(\\s*\\[\\d+\\])?");
+                        sig = std::regex_replace(sig, re, "color $1$2");
+                    }
+                    f << retType << " " << fnName << sig << ";\n";
+                }
+            }
+        }
+    }
+
     if (isTopLevel) {
         // Wrap the whole sketch body in setup() so top-level code compiles.
         // Call noLoop() at end so the blank draw() doesn't wipe the frame.
         // This matches Processing Java's static mode exactly.
         f << "\nvoid setup() {\n";
-        for (auto& l : code) f << "    " << sanitizeLine(l) << "\n";
+        for (auto& l : code) {
+            std::string sl = sanitizeLine(l);
+            // Fix int->color for variables known to hold color values
+            for (auto& cv : colorVars) {
+                // Replace `int varname` and `int varname[N]` with color equivalents
+                std::regex re("\\bint\\s+(" + cv + ")\\b(\\s*\\[\\d+\\])?");
+                sl = std::regex_replace(sl, re, "color $1$2");
+            }
+            f << "    " << sl << "\n";
+        }
         f << "    noLoop();\n";  // static mode: run setup() once, stop
         f << "}\n";
         f << "void draw() {}\n";
     } else {
         // Structured sketch -- paste as-is (already has setup/draw defined)
-        for (auto& l : code) f << sanitizeLine(l) << "\n";
+        for (auto& l : code) {
+            std::string sl = sanitizeLine(l);
+            for (auto& cv : colorVars) {
+                // Replace `int varname` and `int varname[N]` with color equivalents
+                std::regex re("\\bint\\s+(" + cv + ")\\b(\\s*\\[\\d+\\])?");
+                sl = std::regex_replace(sl, re, "color $1$2");
+            }
+            f << sl << "\n";
+        }
     }
 
     // Generate wireCallbacks() -- assigns only the callbacks the sketch defines.
@@ -914,6 +1130,11 @@ static bool writeSketch() {
     f << "}\n";
     // Wire up via a global initializer (runs before main)
     f << "static int _autoWire = []{ _wireCallbacksFn = _sketchWire; return 0; }();\n";
+    if (isTopLevel) {
+        // For static sketches: register setup() as the redraw function
+        // so tiling WMs (i3) can trigger a redraw when the window is resized.
+        f << "static int _autoRedraw = []{ _staticSketchSetup = setup; return 0; }();\n";
+    }
 
     f << "} // namespace Processing\n";
     return true;
@@ -1109,10 +1330,52 @@ static void doCompile(bool thenRun=false) {
 #endif
     std::string outBin = sketchBin + ext;
 
-    // Build the compile command (quote outBin in case it contains spaces)
+    // Speed optimization: compile Processing.cpp to Processing.o once,
+    // then reuse it. Only Sketch_run.cpp changes each run.
+    // On Windows this cuts compile time from ~8s to ~2s.
+    static bool processingObjBuilt = false;
+    // Delete stale precompiled header if it exists -- it can cause GCC to use
+    // outdated declarations even after Processing.h is updated.
+    if (plat_file_exists("src/Processing.h.gch")) {
+        std::remove("src/Processing.h.gch");
+    }
+
+    // Force rebuild if Processing.cpp is newer than Processing.o
+    if (plat_file_exists("src/Processing.o") && plat_file_exists("src/Processing.cpp")) {
+        struct stat cpp_st, obj_st;
+        if (stat("src/Processing.cpp", &cpp_st)==0 && stat("src/Processing.o", &obj_st)==0) {
+            if (cpp_st.st_mtime > obj_st.st_mtime) {
+                processingObjBuilt = false; // force rebuild
+                outLines.push_back("[build] Processing.cpp changed -- rebuilding Processing.o");
+            }
+        }
+    }
+
+    if (!processingObjBuilt || !plat_file_exists("src/Processing.o")) {
+        std::string preCmd =
+            "g++ -std=c++17 -c"
+            " src/Processing.cpp"
+            " -o src/Processing.o"
+            " " + buildFlags +
+#ifndef _WIN32
+            " 2>&1" +
+#endif
+            "";
+#ifdef _WIN32
+        auto _pp0 = plat_popen(preCmd);
+        if (_pp0.f) { char buf[256]; while(fgets(buf,sizeof(buf),_pp0.f)){} plat_pclose(_pp0); }
+#else
+        FILE* _pp0 = popen(preCmd.c_str(),"r");
+        if (_pp0) { char buf[256]; while(fgets(buf,sizeof(buf),_pp0)){} pclose(_pp0); }
+#endif
+        processingObjBuilt = plat_file_exists("src/Processing.o");
+    }
+
+    // Build the compile command -- link prebuilt Processing.o with sketch
+    std::string processingObj = processingObjBuilt ? "src/Processing.o" : "src/Processing.cpp";
     std::string cmd =
         "g++ -std=c++17"
-        " src/Processing.cpp"
+        " " + processingObj +
         " src/Sketch_run.cpp"
         " src/Processing_defaults.cpp"
         " src/main.cpp"
@@ -1266,12 +1529,21 @@ static std::vector<Tok> tokenize(const std::string& ln) {
             out.push_back({ ln.substr(i, j-i+1), 206, 145, 120 });
             i = j+1; continue;
         }
-        // Angle-bracket include
-        if (ln[i] == '<' && i > 0) {
-            int j = i+1;
-            while (j < n && ln[j] != '>') j++;
-            out.push_back({ ln.substr(i, j-i+1), 206, 145, 120 });
-            i = j+1; continue;
+        // Angle-bracket include: only color <...> as string after #include
+        // Regular < (comparison, template) is treated as a plain operator
+        if (ln[i] == '<') {
+            // Check if this line starts with #include
+            std::string trimmed = ln.substr(0, i);
+            bool isInclude = (trimmed.find("#include") != std::string::npos);
+            if (isInclude) {
+                int j = i+1;
+                while (j < n && ln[j] != '>') j++;
+                out.push_back({ ln.substr(i, j-i+1), 206, 145, 120 });
+                i = j+1; continue;
+            }
+            // Otherwise treat < as a plain operator character
+            out.push_back({ "<", 200, 200, 200 });
+            i++; continue;
         }
         // Char literal
         if (ln[i] == '\'' && i+2 < n) {

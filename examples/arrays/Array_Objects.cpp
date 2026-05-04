@@ -41,8 +41,7 @@ public:
 
 // ---- Sketch code ----
 int unit = 40;
-int count;
-Module** mods;
+std::vector<Module> mods;
 
 void setup() {
     size(640, 360);
@@ -50,14 +49,12 @@ void setup() {
 
     int wideCount = width / unit;
     int highCount = height / unit;
-    count = wideCount * highCount;
 
-    mods = new Module*[count];
+    mods.reserve(wideCount * highCount);
 
-    int index = 0;
     for (int y = 0; y < highCount; y++) {
         for (int x = 0; x < wideCount; x++) {
-            mods[index++] = new Module(
+            mods.emplace_back(
                 x * unit,
                 y * unit,
                 unit / 2,
@@ -72,8 +69,8 @@ void setup() {
 void draw() {
     background(0);
 
-    for (int i = 0; i < count; i++) {
-        mods[i]->update();
-        mods[i]->display();
+    for (auto& mod : mods) {
+        mod.update();
+        mod.display();
     }
 }
